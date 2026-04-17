@@ -6,6 +6,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 
 import asyncio
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -114,16 +115,31 @@ def _get_service_pids() -> set:
                 capture_output=True, text=True, timeout=5,
             )
             if result.returncode == 0:
-                # Output: "PID\tStatus\tLabel" header, then one data line
-                for line in result.stdout.strip().splitlines():
-                    parts = line.split()
-                    if len(parts) >= 3 and parts[2] == label:
-                        try:
-                            pid = int(parts[0])
-                            if pid > 0:
-                                pids.add(pid)
-                        except ValueError:
-                            pass
+                output = result.stdout.strip()
+
+                # Modern macOS launchctl often returns plist/dict-style output:
+                # {
+                #   "Label" = "ai.hermes.gateway";
+                #   "PID" = 18554;
+                # }
+                pid_match = re.search(r'^\s*"PID"\s*=\s*(\d+);', output, re.MULTILINE)
+                if pid_match:
+                    pid = int(pid_match.group(1))
+                    if pid > 0:
+                        pids.add(pid)
+                else:
+                    # Older launchctl output is tabular:
+                    # PID\tStatus\tLabel
+                    # 123\t0\tai.hermes.gateway
+                    for line in output.splitlines():
+                        parts = line.split()
+                        if len(parts) >= 3 and parts[2] == label:
+                            try:
+                                pid = int(parts[0])
+                                if pid > 0:
+                                    pids.add(pid)
+                            except ValueError:
+                                pass
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 

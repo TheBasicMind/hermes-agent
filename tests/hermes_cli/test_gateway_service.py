@@ -449,6 +449,30 @@ class TestGatewayStopCleanup:
         assert kill_calls == [False]
 
 
+class TestLaunchdServicePidDetection:
+    def test_get_service_pids_parses_launchctl_plist_output(self, monkeypatch):
+        label = gateway_cli.get_launchd_label()
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=5, **kwargs):
+            assert cmd == ["launchctl", "list", label]
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    '{\n'
+                    '\t"Label" = "ai.hermes.gateway";\n'
+                    '\t"PID" = 18554;\n'
+                    '}\n'
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._get_service_pids() == {18554}
+
+
 class TestLaunchdServiceRecovery:
     def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
