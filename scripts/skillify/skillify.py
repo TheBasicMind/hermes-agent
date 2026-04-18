@@ -262,6 +262,33 @@ def do_refresh(cfg: SkillifyConfig, tools: Mapping[str, Mapping[str, Any]]) -> N
         do_create(cfg, name, tools)
 
 
+def do_remove(cfg: SkillifyConfig, capability_name: str) -> None:
+    cap = cfg.capabilities.get(capability_name)
+    if cap is None:
+        raise SystemExit(
+            f"Unknown capability {capability_name!r}. Configured: "
+            f"{', '.join(sorted(cfg.capabilities))}."
+        )
+    import shutil
+
+    removed = []
+    skill_dir = cfg.output_dir / cap.facade_name
+    if skill_dir.exists():
+        shutil.rmtree(skill_dir)
+        removed.append(str(skill_dir))
+
+    adapter_path = cfg.output_dir / "adapters" / f"{cap.name}.yaml"
+    if adapter_path.exists():
+        adapter_path.unlink()
+        removed.append(str(adapter_path))
+
+    if removed:
+        for r in removed:
+            print(f"Removed {r}")
+    else:
+        print(f"Nothing to remove for capability {capability_name!r} (files not found).")
+
+
 def _default_config_path() -> Path:
     """Return skillify.config.yaml next to the Hermes agent root."""
     return Path(__file__).resolve().parents[2] / "skillify.config.yaml"
@@ -274,6 +301,7 @@ def main(argv: List[str] = None) -> int:
             "Examples:\n"
             "  skillify create browser          # generate/refresh skd_browser\n"
             "  skillify refresh                 # regenerate all capabilities\n"
+            "  skillify remove browser          # delete skd_browser files\n"
             "  skillify --config my.yaml create browser"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -291,6 +319,9 @@ def main(argv: List[str] = None) -> int:
 
     sub.add_parser("refresh", help="Regenerate artifacts for every configured capability.")
 
+    p_remove = sub.add_parser("remove", help="Delete generated files for one capability.")
+    p_remove.add_argument("capability", help="Capability name (key under 'capabilities').")
+
     args = parser.parse_args(argv)
 
     config_path = args.config or _default_config_path()
@@ -299,6 +330,11 @@ def main(argv: List[str] = None) -> int:
         print(f"Copy scripts/skillify/config.example.yaml to {config_path} to get started.", file=sys.stderr)
         return 1
     cfg = load_config(config_path)
+
+    if args.cmd == "remove":
+        do_remove(cfg, args.capability)
+        return 0
+
     tools = _load_registered_tools()
 
     if args.cmd == "create":
