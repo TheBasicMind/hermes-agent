@@ -11,7 +11,11 @@ See the skillify design spec kept at the HermesProject repo root (not in this tr
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Mapping
+
+import yaml
 
 from tools.registry import registry, tool_error
 
@@ -61,6 +65,82 @@ def skillified_call_handler(args: Dict[str, Any], **_kw: Any) -> str:
         return tool_error("params must be an object")
 
     return tool_error(f"Unknown capability: {capability!r}")
+
+
+# ---------------------------------------------------------------------------
+# Adapters
+# ---------------------------------------------------------------------------
+
+
+class SkillifyCollisionError(RuntimeError):
+    """Raised when two discoverable sources define the same capability."""
+
+
+@dataclass(frozen=True)
+class AdapterSpec:
+    capability: str
+    operations: Mapping[str, Mapping[str, Any]]
+    source_path: Path
+
+
+def _parse_adapter_yaml(path: Path) -> List[AdapterSpec]:
+    try:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise RuntimeError(f"Invalid adapter YAML at {path}: {exc}") from exc
+
+    if not isinstance(doc, dict):
+        raise RuntimeError(
+            f"Adapter {path} must have a top-level mapping of capability "
+            f"names to operation specs."
+        )
+
+    specs: List[AdapterSpec] = []
+    for capability, body in doc.items():
+        if not isinstance(body, dict) or "operations" not in body:
+            raise RuntimeError(
+                f"Adapter {path} capability {capability!r} missing "
+                f"'operations' key."
+            )
+        operations = body["operations"]
+        if not isinstance(operations, dict):
+            raise RuntimeError(
+                f"Adapter {path} capability {capability!r}: 'operations' "
+                f"must be a mapping."
+            )
+        specs.append(
+            AdapterSpec(
+                capability=str(capability),
+                operations={str(k): v for k, v in operations.items()},
+                source_path=path,
+            )
+        )
+    return specs
+
+
+def load_adapters(skills_dirs: List[Path]) -> Dict[str, AdapterSpec]:
+    """Scan ``<skills_dir>/adapters/*.yaml`` across all given skills dirs.
+
+    Returns a mapping ``{capability: AdapterSpec}``.  Raises
+    :class:`SkillifyCollisionError` if the same capability name appears in
+    more than one source file across any of the provided directories.
+    """
+    found: Dict[str, AdapterSpec] = {}
+    for skills_dir in skills_dirs:
+        adapters_dir = Path(skills_dir) / "adapters"
+        if not adapters_dir.is_dir():
+            continue
+        for entry in sorted(adapters_dir.glob("*.yaml")):
+            for spec in _parse_adapter_yaml(entry):
+                existing = found.get(spec.capability)
+                if existing is not None:
+                    raise SkillifyCollisionError(
+                        f"Adapter collision for capability "
+                        f"{spec.capability!r}: defined in both "
+                        f"{existing.source_path} and {spec.source_path}."
+                    )
+                found[spec.capability] = spec
+    return found
 
 
 registry.register(
