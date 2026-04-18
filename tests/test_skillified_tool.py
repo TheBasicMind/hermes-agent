@@ -89,3 +89,88 @@ def test_load_adapters_collision_across_dirs_raises(tmp_path):
     assert "browser" in msg
     assert str(dir_a) in msg
     assert str(dir_b) in msg
+
+
+# ---------- Dispatch ----------
+
+
+def test_dispatch_routes_to_target_via_handle_function_call(
+    tmp_path, monkeypatch
+):
+    _write_adapter(
+        tmp_path,
+        "widget.yaml",
+        """
+widget:
+  operations:
+    ping: {target: widget_ping}
+""",
+    )
+
+    # Patch the adapter resolver used by the handler.
+    import tools.skillified_tool as sk
+
+    monkeypatch.setattr(
+        sk,
+        "_resolve_skills_dirs",
+        lambda: [tmp_path],
+    )
+    sk._invalidate_adapter_cache()
+
+    # Patch handle_function_call to observe the call.
+    calls = []
+
+    def fake_hfc(function_name, function_args, **kwargs):
+        calls.append((function_name, function_args, kwargs))
+        return json.dumps({"ok": True, "name": function_name})
+
+    monkeypatch.setattr("model_tools.handle_function_call", fake_hfc)
+
+    result = registry.dispatch(
+        "skillified_call",
+        {
+            "capability": "widget",
+            "operation": "ping",
+            "params": {"x": 1},
+        },
+    )
+    assert len(calls) == 1
+    target_name, target_args, target_kwargs = calls[0]
+    assert target_name == "widget_ping"
+    assert target_args == {"x": 1}
+    assert target_kwargs.get("skip_pre_tool_call_hook") is False
+
+    payload = json.loads(result)
+    assert payload == {"ok": True, "name": "widget_ping"}
+
+
+def test_dispatch_unknown_operation_returns_structured_error(
+    tmp_path, monkeypatch
+):
+    _write_adapter(
+        tmp_path,
+        "widget.yaml",
+        """
+widget:
+  operations:
+    ping: {target: widget_ping}
+""",
+    )
+
+    import tools.skillified_tool as sk
+
+    monkeypatch.setattr(sk, "_resolve_skills_dirs", lambda: [tmp_path])
+    sk._invalidate_adapter_cache()
+
+    result = registry.dispatch(
+        "skillified_call",
+        {
+            "capability": "widget",
+            "operation": "pong",
+            "params": {},
+        },
+    )
+    payload = json.loads(result)
+    assert "error" in payload
+    assert "unknown operation" in payload["error"].lower()
+    assert "ping" in payload["error"]  # lists available ops
