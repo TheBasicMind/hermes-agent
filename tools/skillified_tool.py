@@ -312,9 +312,21 @@ def _scan_skd_skills(skills_dirs: List[Path]) -> Dict[str, List[Path]]:
 
 
 def _tool_names_in_toolset(toolset: str) -> List[str]:
-    """Return registered tool names that belong to ``toolset``."""
+    """Return tool names that belong to ``toolset``.
+
+    Returns the union of toolset-config-defined tools (via model_tools.resolve_toolset,
+    which covers YAML-defined toolsets like browser) and Python-registry-registered
+    tools (which covers plugin and test toolsets).
+    """
+    names: set[str] = set()
+    try:
+        from model_tools import resolve_toolset
+        names.update(resolve_toolset(toolset))
+    except Exception:
+        pass
     tool_to_toolset = registry.get_tool_to_toolset_map()
-    return [name for name, ts in tool_to_toolset.items() if ts == toolset]
+    names.update(name for name, ts in tool_to_toolset.items() if ts == toolset)
+    return list(names)
 
 
 def build_skillified_hide_set() -> set[str]:
