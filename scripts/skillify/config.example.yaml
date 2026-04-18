@@ -1,0 +1,24 @@
+# Skillify capability configuration.
+# Copy to skillify.config.yaml (gitignored) or pass --config explicitly.
+
+output_dir: ~/.hermes-skillify-skills   # must also be in skills.external_dirs
+
+capabilities:
+  browser:
+    source_toolset: browser
+    facade_name: skd_browser
+    operation_mode: rename            # pass-through | rename
+    description: >-
+      Lazy-loaded browser automation capability. Load when a task requires
+      dynamic page interaction, login flows, DOM inspection, or screenshots.
+    load_on:
+      - dynamic webpage interaction
+      - login or session flow
+      - DOM inspection
+      - screenshot-based web tasks
+    rename:
+      browser_navigate: navigate
+      browser_click: click
+      browser_type: type
+      browser_snapshot: snapshot
+      browser_vision: vision
