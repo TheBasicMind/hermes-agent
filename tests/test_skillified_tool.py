@@ -174,3 +174,106 @@ widget:
     assert "error" in payload
     assert "unknown operation" in payload["error"].lower()
     assert "ping" in payload["error"]  # lists available ops
+
+
+# ---------- Hide set ----------
+
+
+SKD_FRONTMATTER_TEMPLATE = """---
+name: {name}
+description: Lazy capability.
+metadata:
+  hermes:
+    skillified_from_toolset: {toolset}
+---
+
+body.
+"""
+
+
+def _write_skd_skill(skills_dir, name: str, toolset: str):
+    skill_dir = skills_dir / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        SKD_FRONTMATTER_TEMPLATE.format(name=name, toolset=toolset),
+        encoding="utf-8",
+    )
+
+
+def test_build_hide_set_empty_when_no_skd_skills(tmp_path, monkeypatch):
+    import tools.skillified_tool as sk
+    monkeypatch.setattr(sk, "_resolve_skills_dirs", lambda: [tmp_path])
+
+    from tools.registry import registry
+    # Provide a fake toolset resolver so no tool names are guessed.
+    assert sk.build_skillified_hide_set() == set()
+
+
+def test_build_hide_set_scans_frontmatter(tmp_path, monkeypatch):
+    _write_skd_skill(tmp_path, "skd_browser", "browser")
+
+    import tools.skillified_tool as sk
+    from tools.registry import registry
+
+    # Register two fake tools under toolset 'browser'.
+    def _noop(args, **kw):
+        return "{}"
+
+    registry.register(
+        name="browser_test_navigate",
+        toolset="browser",
+        schema={"name": "browser_test_navigate", "parameters": {"type": "object", "properties": {}}},
+        handler=_noop,
+    )
+    registry.register(
+        name="browser_test_click",
+        toolset="browser",
+        schema={"name": "browser_test_click", "parameters": {"type": "object", "properties": {}}},
+        handler=_noop,
+    )
+
+    try:
+        monkeypatch.setattr(sk, "_resolve_skills_dirs", lambda: [tmp_path])
+        hide_set = sk.build_skillified_hide_set()
+        assert "browser_test_navigate" in hide_set
+        assert "browser_test_click" in hide_set
+    finally:
+        registry.deregister("browser_test_navigate")
+        registry.deregister("browser_test_click")
+
+
+def test_build_hide_set_raises_on_duplicate_toolset(tmp_path, monkeypatch):
+    dir_a = tmp_path / "a"
+    dir_b = tmp_path / "b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    _write_skd_skill(dir_a, "skd_browser", "browser")
+    _write_skd_skill(dir_b, "skd_browser_alt", "browser")
+
+    import tools.skillified_tool as sk
+    monkeypatch.setattr(
+        sk, "_resolve_skills_dirs", lambda: [dir_a, dir_b]
+    )
+
+    with pytest.raises(sk.SkillifyCollisionError) as exc_info:
+        sk.build_skillified_hide_set()
+
+    msg = str(exc_info.value)
+    assert "browser" in msg
+    assert "skd_browser" in msg
+    assert "skd_browser_alt" in msg
+
+
+def test_build_hide_set_ignores_non_skd_skills(tmp_path, monkeypatch):
+    # A non-skd skill with capability_domain frontmatter must NOT trigger hiding.
+    skill_dir = tmp_path / "browser_helper"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: browser_helper\ndescription: helper\nmetadata:\n"
+        "  hermes:\n    capability_domain: browser\n    skillified_from_toolset: browser\n---\nbody.\n",
+        encoding="utf-8",
+    )
+
+    import tools.skillified_tool as sk
+    monkeypatch.setattr(sk, "_resolve_skills_dirs", lambda: [tmp_path])
+    assert sk.build_skillified_hide_set() == set()
