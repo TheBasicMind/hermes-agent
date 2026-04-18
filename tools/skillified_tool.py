@@ -250,6 +250,103 @@ def skillified_call_handler(args: Dict[str, Any], **kwargs: Any) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Hide set (init-time scan of skd_* frontmatter)
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_FRONTMATTER_RE = _re.compile(r"^---\s*\n(.*?)\n---\s*\n", _re.DOTALL)
+
+
+def _read_frontmatter(skill_md: Path) -> Optional[Dict[str, Any]]:
+    try:
+        text = skill_md.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        return None
+    try:
+        parsed = yaml.safe_load(match.group(1))
+    except yaml.YAMLError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _skillified_toolset(frontmatter: Dict[str, Any]) -> Optional[str]:
+    hermes = (frontmatter.get("metadata") or {}).get("hermes") or {}
+    if not isinstance(hermes, dict):
+        return None
+    toolset = hermes.get("skillified_from_toolset")
+    if not isinstance(toolset, str) or not toolset.strip():
+        return None
+    return toolset.strip()
+
+
+def _scan_skd_skills(skills_dirs: List[Path]) -> Dict[str, List[Path]]:
+    """Return ``{toolset: [skill_md_path, ...]}`` for every skd_* skill found.
+
+    Only directories whose name starts with ``skd_`` and which contain a
+    ``SKILL.md`` with a valid ``skillified_from_toolset`` frontmatter entry
+    are considered.
+    """
+    by_toolset: Dict[str, List[Path]] = {}
+    for skills_dir in skills_dirs:
+        base = Path(skills_dir)
+        if not base.is_dir():
+            continue
+        for entry in sorted(base.iterdir()):
+            if not entry.is_dir() or not entry.name.startswith("skd_"):
+                continue
+            skill_md = entry / "SKILL.md"
+            if not skill_md.is_file():
+                continue
+            fm = _read_frontmatter(skill_md)
+            if fm is None:
+                continue
+            toolset = _skillified_toolset(fm)
+            if toolset is None:
+                continue
+            by_toolset.setdefault(toolset, []).append(skill_md)
+    return by_toolset
+
+
+def _tool_names_in_toolset(toolset: str) -> List[str]:
+    """Return registered tool names that belong to ``toolset``."""
+    tool_to_toolset = registry.get_tool_to_toolset_map()
+    return [name for name, ts in tool_to_toolset.items() if ts == toolset]
+
+
+def build_skillified_hide_set() -> set:
+    """Compute the set of source tool names to hide from ``self.tools``.
+
+    Scans all discoverable skills dirs for ``skd_*`` skills, reads their
+    ``skillified_from_toolset`` frontmatter, and returns the union of tool
+    names registered in those toolsets.
+
+    Raises :class:`SkillifyCollisionError` if two or more ``skd_*`` skills
+    declare the same ``skillified_from_toolset`` value.
+    """
+    dirs = _resolve_skills_dirs()
+    by_toolset = _scan_skd_skills(dirs)
+
+    hide: set = set()
+    for toolset, sources in by_toolset.items():
+        if len(sources) > 1:
+            paths = ", ".join(str(p) for p in sources)
+            # Extract skill directory names for clarity.
+            skill_names = ", ".join(p.parent.name for p in sources)
+            raise SkillifyCollisionError(
+                f"Multiple skd_* skills declare "
+                f"skillified_from_toolset={toolset!r}: {skill_names} "
+                f"(paths: {paths}). Each toolset may be skillified by at "
+                f"most one skd_* skill."
+            )
+        hide.update(_tool_names_in_toolset(toolset))
+    return hide
+
+
 registry.register(
     name="skillified_call",
     toolset="skillified",
