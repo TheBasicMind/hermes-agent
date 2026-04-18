@@ -1,7 +1,5 @@
 """Integration test: skd_* skills hide registered source tools from emission."""
 
-from pathlib import Path
-
 import pytest
 
 
