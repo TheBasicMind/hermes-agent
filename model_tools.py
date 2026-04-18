@@ -382,6 +382,8 @@ def _compute_tool_definitions(
     try:
         from tools.skillified_tool import build_skillified_hide_set
         hide_set = build_skillified_hide_set()
+    except ImportError:
+        hide_set = set()  # module absent; nothing to hide
     except Exception as exc:
         if not quiet_mode:
             print(f"⚠️  Skillify hide-set build failed: {exc}")
