@@ -8,6 +8,7 @@ capabilities:
     source_toolset: browser
     facade_name: skd_browser
     operation_mode: rename            # pass-through | rename
+    emoji: 🌐
     description: >-
       Lazy-loaded browser automation capability. Load when a task requires
       dynamic page interaction, login flows, DOM inspection, or screenshots.

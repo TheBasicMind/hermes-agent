@@ -33,6 +33,7 @@ class CapabilityConfig:
     facade_name: str
     operation_mode: str  # "pass-through" | "rename"
     description: str
+    emoji: str
     load_on: List[str]
     rename: Dict[str, str]  # source_tool_name -> operation_name
 
@@ -68,6 +69,7 @@ def load_config(path: Path) -> SkillifyConfig:
             facade_name=str(body.get("facade_name", f"skd_{name}")),
             operation_mode=str(body.get("operation_mode", "pass-through")),
             description=str(body.get("description", "")).strip(),
+            emoji=str(body.get("emoji", "🔧")),
             load_on=[str(s) for s in (body.get("load_on") or [])],
             rename={str(k): str(v) for k, v in (body.get("rename") or {}).items()},
         )
@@ -289,6 +291,15 @@ def do_remove(cfg: SkillifyConfig, capability_name: str) -> None:
         print(f"Nothing to remove for capability {capability_name!r} (files not found).")
 
 
+def do_list(cfg: SkillifyConfig) -> None:
+    for name, cap in cfg.capabilities.items():
+        active = (cfg.output_dir / cap.facade_name / "SKILL.md").exists()
+        tick = "✓" if active else "✗"
+        status = "skillified  " if active else "not skillified"
+        short_desc = cap.description.split(".")[0].split("\n")[0].strip()
+        print(f"  {tick} {status}  {name}  {cap.emoji} {short_desc}")
+
+
 def _default_config_path() -> Path:
     """Return skillify.config.yaml next to the Hermes agent root."""
     return Path(__file__).resolve().parents[2] / "skillify.config.yaml"
@@ -299,6 +310,7 @@ def main(argv: List[str] = None) -> int:
         description=(
             "Generate skd_* skill files and adapter YAML for Hermes skillified capabilities.\n\n"
             "Examples:\n"
+            "  skillify list                    # show all capabilities and status\n"
             "  skillify create browser          # generate/refresh skd_browser\n"
             "  skillify refresh                 # regenerate all capabilities\n"
             "  skillify remove browser          # delete skd_browser files\n"
@@ -313,6 +325,8 @@ def main(argv: List[str] = None) -> int:
         help=f"Path to skillify config YAML (default: {_default_config_path()})",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("list", help="List all configured capabilities and their status.")
 
     p_create = sub.add_parser("create", help="Create artifacts for one capability.")
     p_create.add_argument("capability", help="Capability name (key under 'capabilities').")
@@ -330,6 +344,10 @@ def main(argv: List[str] = None) -> int:
         print(f"Copy scripts/skillify/config.example.yaml to {config_path} to get started.", file=sys.stderr)
         return 1
     cfg = load_config(config_path)
+
+    if args.cmd == "list":
+        do_list(cfg)
+        return 0
 
     if args.cmd == "remove":
         do_remove(cfg, args.capability)
