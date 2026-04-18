@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Skillify generator CLI.
+"""Skillify capability generator CLI.
 
 Reads a capability config (YAML) and emits ``skd_<name>/SKILL.md`` +
 ``adapters/<capability>.yaml`` into a user-chosen external skills dir.
 
 Usage:
-    ./venv/bin/python scripts/skillify/skillify.py create --config skillify.config.yaml browser
-    ./venv/bin/python scripts/skillify/skillify.py refresh --config skillify.config.yaml
+    skillify create browser
+    skillify refresh
+    skillify --config /path/to/other.yaml create browser
 
-See docs/superpowers/specs/2026-04-18-skillify-design.md for the contract.
+The default config is ``skillify.config.yaml`` next to the Hermes agent root.
+Copy ``scripts/skillify/config.example.yaml`` there to get started.
 """
 
 from __future__ import annotations
@@ -260,10 +262,27 @@ def do_refresh(cfg: SkillifyConfig, tools: Mapping[str, Mapping[str, Any]]) -> N
         do_create(cfg, name, tools)
 
 
+def _default_config_path() -> Path:
+    """Return skillify.config.yaml next to the Hermes agent root."""
+    return Path(__file__).resolve().parents[2] / "skillify.config.yaml"
+
+
 def main(argv: List[str] = None) -> int:
-    parser = argparse.ArgumentParser(description="Skillify capability generator")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Generate skd_* skill files and adapter YAML for Hermes skillified capabilities.\n\n"
+            "Examples:\n"
+            "  skillify create browser          # generate/refresh skd_browser\n"
+            "  skillify refresh                 # regenerate all capabilities\n"
+            "  skillify --config my.yaml create browser"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
-        "--config", type=Path, required=True, help="Path to skillify config YAML."
+        "--config",
+        type=Path,
+        default=None,
+        help=f"Path to skillify config YAML (default: {_default_config_path()})",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -274,7 +293,12 @@ def main(argv: List[str] = None) -> int:
 
     args = parser.parse_args(argv)
 
-    cfg = load_config(args.config)
+    config_path = args.config or _default_config_path()
+    if not config_path.exists():
+        print(f"Config not found: {config_path}", file=sys.stderr)
+        print(f"Copy scripts/skillify/config.example.yaml to {config_path} to get started.", file=sys.stderr)
+        return 1
+    cfg = load_config(config_path)
     tools = _load_registered_tools()
 
     if args.cmd == "create":
