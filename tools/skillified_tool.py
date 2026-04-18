@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
@@ -254,9 +255,7 @@ def skillified_call_handler(args: Dict[str, Any], **kwargs: Any) -> str:
 # Hide set (init-time scan of skd_* frontmatter)
 # ---------------------------------------------------------------------------
 
-import re as _re
-
-_FRONTMATTER_RE = _re.compile(r"^---\s*\n(.*?)\n---\s*\n", _re.DOTALL)
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
 
 def _read_frontmatter(skill_md: Path) -> Optional[Dict[str, Any]]:
@@ -318,7 +317,7 @@ def _tool_names_in_toolset(toolset: str) -> List[str]:
     return [name for name, ts in tool_to_toolset.items() if ts == toolset]
 
 
-def build_skillified_hide_set() -> set:
+def build_skillified_hide_set() -> set[str]:
     """Compute the set of source tool names to hide from ``self.tools``.
 
     Scans all discoverable skills dirs for ``skd_*`` skills, reads their
@@ -331,7 +330,7 @@ def build_skillified_hide_set() -> set:
     dirs = _resolve_skills_dirs()
     by_toolset = _scan_skd_skills(dirs)
 
-    hide: set = set()
+    hide: set[str] = set()
     for toolset, sources in by_toolset.items():
         if len(sources) > 1:
             paths = ", ".join(str(p) for p in sources)
