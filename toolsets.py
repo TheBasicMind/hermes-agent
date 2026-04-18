@@ -39,6 +39,12 @@ _HERMES_CORE_TOOLS = [
     "vision_analyze", "image_generate",
     # Skills
     "skills_list", "skill_view", "skill_manage",
+    # OpenClaw-derived local data tools
+    "market_intel_intake", "market_intel_triage",
+    "knowledge_store_write", "knowledge_store_read",
+    "knowledge_store_search", "knowledge_store_maintain",
+    # X/Twitter integration (gated on provider API keys via check_fn)
+    "all_x_read", "all_x_search", "all_x_write",
     # Browser automation
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
@@ -154,6 +160,24 @@ TOOLSETS = {
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
         "tools": ["skills_list", "skill_view", "skill_manage"],
+        "includes": []
+    },
+
+    "market_intel": {
+        "description": "OpenClaw-derived market-intelligence intake tools backed by Hermes-local SQLite state",
+        "tools": ["market_intel_intake", "market_intel_triage"],
+        "includes": []
+    },
+
+    "knowledge_store": {
+        "description": "OpenClaw-derived knowledge-store tools backed by Hermes-local SQLite state",
+        "tools": ["knowledge_store_write", "knowledge_store_read", "knowledge_store_search", "knowledge_store_maintain"],
+        "includes": []
+    },
+
+    "all_x": {
+        "description": "X/Twitter integration — reads via AISA, semantic search via xAI/Grok, writes via official X API",
+        "tools": ["all_x_read", "all_x_search", "all_x_write"],
         "includes": []
     },
     

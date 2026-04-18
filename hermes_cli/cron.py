@@ -129,6 +129,50 @@ def cron_tick():
     tick(verbose=True)
 
 
+def _find_job_by_identifier(identifier: str):
+    """Find a cron job by exact job ID or exact human-friendly name."""
+    from cron.jobs import get_job, list_jobs
+
+    if not identifier:
+        return None
+
+    direct = get_job(identifier)
+    if direct:
+        return direct
+
+    for job in list_jobs(include_disabled=True):
+        if job.get("name") == identifier:
+            return job
+    return None
+
+
+def cronjob_command(args):
+    """Print the effective prompt for one cron job or all cron jobs."""
+    from cron.jobs import list_jobs
+    from cron.scheduler import _build_job_prompt
+
+    identifier = getattr(args, "id", None)
+    if identifier:
+        job = _find_job_by_identifier(identifier)
+        if not job:
+            print(color(f"Job not found: {identifier}", Colors.RED))
+            return 1
+        print(_build_job_prompt(job))
+        return 0
+
+    jobs = list_jobs(include_disabled=True)
+    if not jobs:
+        print(color("No scheduled jobs.", Colors.DIM))
+        return 0
+
+    for index, job in enumerate(jobs):
+        if index:
+            print("\n" + ("=" * 80) + "\n")
+        print(f"# {job.get('name', '(unnamed)')} ({job.get('id', '?')})\n")
+        print(_build_job_prompt(job))
+    return 0
+
+
 def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs

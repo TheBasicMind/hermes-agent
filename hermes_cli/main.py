@@ -17,6 +17,8 @@ Usage:
     hermes cron                # Manage cron jobs
     hermes cron list           # List cron jobs
     hermes cron status         # Check if cron scheduler is running
+    hermes cronjob             # Show effective cron job prompt(s)
+    hermes cronjob --id NAME   # Show one cron job by ID or exact name
     hermes doctor              # Check configuration and dependencies
     hermes honcho setup                    # Configure Honcho AI memory integration
     hermes honcho status                   # Show Honcho config and connection status
@@ -5498,6 +5500,12 @@ def cmd_cron(args):
     cron_command(args)
 
 
+def cmd_cronjob(args):
+    """Print effective cron job prompts."""
+    from hermes_cli.cron import cronjob_command
+    cronjob_command(args)
+
+
 def cmd_webhook(args):
     """Webhook subscription management."""
     from hermes_cli.webhook import webhook_command
@@ -10433,6 +10441,17 @@ def main():
     _add_accept_hooks_flag(cron_tick)
     _add_accept_hooks_flag(cron_parser)
     cron_parser.set_defaults(func=cmd_cron)
+
+    cronjob_parser = subparsers.add_parser(
+        "cronjob",
+        help="Show effective cron job prompt(s)",
+        description="Print the fully built prompt for one cron job or all cron jobs",
+    )
+    cronjob_parser.add_argument(
+        "--id",
+        help="Job ID or exact human-friendly job name. Omit to print all cron job prompts.",
+    )
+    cronjob_parser.set_defaults(func=cmd_cronjob)
 
     # =========================================================================
     # webhook command

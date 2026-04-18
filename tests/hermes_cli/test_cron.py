@@ -5,7 +5,7 @@ from argparse import Namespace
 import pytest
 
 from cron.jobs import create_job, get_job, list_jobs
-from hermes_cli.cron import cron_command
+from hermes_cli.cron import cron_command, cronjob_command
 
 
 @pytest.fixture()
@@ -14,6 +14,31 @@ def tmp_cron_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
     monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     return tmp_path
+
+
+class TestCronjobPromptInspection:
+    def test_prints_effective_prompt_for_named_job(self, tmp_cron_dir, capsys):
+        create_job(
+            prompt="Check server status",
+            schedule="every 1h",
+            name="Email Triage",
+        )
+
+        cronjob_command(Namespace(id="Email Triage"))
+
+        out = capsys.readouterr().out
+        assert "Check server status" in out
+        assert "[SYSTEM: You are running as a scheduled cron job." in out
+
+    def test_prints_all_job_prompts_when_no_id_is_given(self, tmp_cron_dir, capsys):
+        create_job(prompt="First prompt", schedule="every 1h", name="First")
+        create_job(prompt="Second prompt", schedule="every 2h", name="Second")
+
+        cronjob_command(Namespace(id=None))
+
+        out = capsys.readouterr().out
+        assert "First prompt" in out
+        assert "Second prompt" in out
 
 
 class TestCronCommandLifecycle:
