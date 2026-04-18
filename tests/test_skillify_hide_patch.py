@@ -95,3 +95,15 @@ def test_collision_surfaces_loudly(tmp_path, monkeypatch, fake_browserlike_tools
 
     with pytest.raises(sk.SkillifyCollisionError):
         model_tools.get_tool_definitions(enabled_toolsets=["bx"], quiet_mode=True)
+
+
+def test_skillified_call_visible_in_default_toolset():
+    """skillified_call belongs to toolset 'skillified' and must be available."""
+    import tools.skillified_tool  # noqa: F401
+    import model_tools
+
+    defs = model_tools.get_tool_definitions(
+        enabled_toolsets=["skillified"], quiet_mode=True
+    )
+    names = {d["function"]["name"] for d in defs}
+    assert "skillified_call" in names
