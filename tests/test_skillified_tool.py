@@ -203,9 +203,6 @@ def _write_skd_skill(skills_dir, name: str, toolset: str):
 def test_build_hide_set_empty_when_no_skd_skills(tmp_path, monkeypatch):
     import tools.skillified_tool as sk
     monkeypatch.setattr(sk, "_resolve_skills_dirs", lambda: [tmp_path])
-
-    from tools.registry import registry
-    # Provide a fake toolset resolver so no tool names are guessed.
     assert sk.build_skillified_hide_set() == set()
 
 
