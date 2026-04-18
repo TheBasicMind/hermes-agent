@@ -260,6 +260,18 @@ def get_tool_definitions(
     # needed; plugins respect enabled_toolsets / disabled_toolsets like any
     # other toolset.
 
+    # --- Skillify: subtract tools claimed by skd_* skills ------------------
+    try:
+        from tools.skillified_tool import build_skillified_hide_set
+        hide_set = build_skillified_hide_set()
+    except ImportError:
+        hide_set = set()  # module absent; nothing to hide
+    except Exception as exc:
+        if not quiet_mode:
+            print(f"⚠️  Skillify hide-set build failed: {exc}")
+        raise
+    tools_to_include.difference_update(hide_set)
+
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
 
