@@ -5,16 +5,15 @@ to hidden source tools via ``model_tools.handle_function_call``.  Rich API
 contracts for each capability live in ``skd_*`` skill files loaded lazily via
 the existing skills progressive-disclosure mechanism.
 
-See docs/superpowers/specs/2026-04-18-skillify-design.md for the design.
+See the skillify design spec kept at the HermesProject repo root (not in this tree).
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Dict
 
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -55,15 +54,13 @@ def skillified_call_handler(args: Dict[str, Any], **_kw: Any) -> str:
     params = args.get("params")
 
     if not isinstance(capability, str) or not capability:
-        return json.dumps({"error": "capability must be a non-empty string"})
+        return tool_error("capability must be a non-empty string")
     if not isinstance(operation, str) or not operation:
-        return json.dumps({"error": "operation must be a non-empty string"})
+        return tool_error("operation must be a non-empty string")
     if not isinstance(params, dict):
-        return json.dumps({"error": "params must be an object"})
+        return tool_error("params must be an object")
 
-    return json.dumps(
-        {"error": f"Unknown capability: {capability!r}"}
-    )
+    return tool_error(f"Unknown capability: {capability!r}")
 
 
 registry.register(
