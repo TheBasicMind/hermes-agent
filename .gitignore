@@ -71,3 +71,4 @@ result
 website/static/api/skills-index.json
 models-dev-upstream/
 skillify.config.yaml
+requirements.lock
