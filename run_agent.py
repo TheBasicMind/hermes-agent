@@ -4425,11 +4425,29 @@ class AIAgent:
                 elif hasattr(_socket, "TCP_KEEPALIVE"):
                     # macOS (uses TCP_KEEPALIVE instead of TCP_KEEPIDLE)
                     _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
+                # Local patch (TheBasicMind fork): enforce explicit connect/read
+                # sub-timeouts so TCP connect and first-byte read each have a
+                # bounded wait. Protects against macOS mDNSResponder wedges
+                # and CloudFlare middlebox stalls that left inference calls
+                # hanging for hours with no failover.
+                _connect_to = float(os.getenv("HERMES_HTTP_CONNECT_TIMEOUT", 10.0))
+                _read_to = float(os.getenv("HERMES_HTTP_READ_TIMEOUT", 300.0))
                 client_kwargs["http_client"] = _httpx.Client(
                     transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                    timeout=_httpx.Timeout(
+                        connect=_connect_to,
+                        read=_read_to,
+                        write=_read_to,
+                        pool=_connect_to,
+                    ),
                 )
             except Exception:
                 pass  # Fall through to default transport if socket opts fail
+        # Disable SDK-level retries so Hermes failover orchestration handles
+        # rate-limit/billing fallback immediately instead of being delayed by
+        # hidden internal retry loops.
+        if "max_retries" not in client_kwargs:
+            client_kwargs["max_retries"] = 0
         client = OpenAI(**client_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",

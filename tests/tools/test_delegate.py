@@ -564,9 +564,23 @@ class TestBlockedTools(unittest.TestCase):
         for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
 
-    def test_constants(self):
-        self.assertEqual(_get_max_concurrent_children(), 3)
+    @patch("tools.delegate_tool._load_config")
+    def test_constants(self, mock_load_config):
+        mock_load_config.return_value = {}
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_get_max_concurrent_children(), 3)
         self.assertEqual(MAX_DEPTH, 2)
+
+    @patch("tools.delegate_tool._load_config")
+    def test_max_concurrent_children_uses_config_value(self, mock_load_config):
+        mock_load_config.return_value = {"max_concurrent_children": 1}
+        self.assertEqual(_get_max_concurrent_children(), 1)
+
+    @patch("tools.delegate_tool._load_config")
+    def test_max_concurrent_children_env_fallback(self, mock_load_config):
+        mock_load_config.return_value = {}
+        with patch.dict(os.environ, {"DELEGATION_MAX_CONCURRENT_CHILDREN": "1"}, clear=False):
+            self.assertEqual(_get_max_concurrent_children(), 1)
 
 
 class TestDelegationCredentialResolution(unittest.TestCase):
