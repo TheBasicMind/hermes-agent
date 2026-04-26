@@ -64,7 +64,14 @@ class XOfficialAdapter:
             )
 
     def _get_tweepy_client(self):
-        """Lazy-init tweepy client (optional dependency)."""
+        """Lazy-init tweepy client (optional dependency).
+
+        Initialized with both bearer token (for app-only reads) and OAuth1 user
+        creds (for writes). Tweepy picks the right one per call: read methods
+        default to user_auth=False (bearer), writes default to user_auth=True
+        (OAuth1). This is important because bearer and user creds can have
+        different validity windows on this account.
+        """
         if self._tweepy_client is not None:
             return self._tweepy_client
 
@@ -72,16 +79,23 @@ class XOfficialAdapter:
             import tweepy
         except ImportError:
             raise XAuthError(
-                "tweepy is required for official X API writes. Install with: pip install tweepy",
+                "tweepy is required for official X API access. Install with: pip install tweepy",
                 provider="x_official",
             )
 
-        self._require_user_auth()
+        if not self.has_bearer and not self.has_user_auth:
+            raise XAuthError(
+                "Official X API requires at least one of: X_BEARER_TOKEN (reads) "
+                "or OAuth1 user creds (X_API_KEY/X_API_SECRET/X_ACCESS_TOKEN/X_ACCESS_TOKEN_SECRET, writes)",
+                provider="x_official",
+            )
+
         self._tweepy_client = tweepy.Client(
-            consumer_key=self.api_key,
-            consumer_secret=self.api_secret,
-            access_token=self.access_token,
-            access_token_secret=self.access_token_secret,
+            bearer_token=self.bearer_token or None,
+            consumer_key=self.api_key or None,
+            consumer_secret=self.api_secret or None,
+            access_token=self.access_token or None,
+            access_token_secret=self.access_token_secret or None,
             wait_on_rate_limit=False,
         )
         return self._tweepy_client
@@ -304,12 +318,12 @@ class XOfficialAdapter:
     # ==================== Fallback Read Operations ====================
 
     def user_get(self, username: str) -> Dict[str, Any]:
-        """Get user info (fallback read via official API)."""
+        """Get user info (fallback read via official API). Prefers bearer token."""
         if not self.has_bearer and not self.has_user_auth:
             raise XAuthError("No auth available for official X API read fallback", provider="x_official")
         client = self._get_tweepy_client()
         try:
-            response = client.get_user(username=username, user_fields=[
+            response = client.get_user(username=username, user_auth=not self.has_bearer, user_fields=[
                 "created_at", "description", "public_metrics", "verified",
                 "verified_type", "profile_image_url", "url", "location",
                 "pinned_tweet_id",
@@ -325,13 +339,14 @@ class XOfficialAdapter:
             return self._handle_tweepy_error(e, "user_get")
 
     def tweet_get(self, tweet_id: str) -> Dict[str, Any]:
-        """Get tweet detail (fallback read via official API)."""
+        """Get tweet detail (fallback read via official API). Prefers bearer token."""
         if not self.has_bearer and not self.has_user_auth:
             raise XAuthError("No auth available for official X API read fallback", provider="x_official")
         client = self._get_tweepy_client()
         try:
             response = client.get_tweet(
                 id=tweet_id,
+                user_auth=not self.has_bearer,
                 tweet_fields=["created_at", "public_metrics", "entities",
                               "attachments", "referenced_tweets", "conversation_id",
                               "lang", "possibly_sensitive", "in_reply_to_user_id",
