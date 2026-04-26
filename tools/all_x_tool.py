@@ -53,6 +53,148 @@ def _check_all_x_write() -> bool:
     )
 
 
+def _extract_reply_parent_id(tweet: Dict[str, Any]) -> Optional[str]:
+    """Return the parent tweet ID when this tweet is a reply, if present."""
+    refs = tweet.get("referenced_tweets")
+    if isinstance(refs, list):
+        for ref in refs:
+            if isinstance(ref, dict) and ref.get("type") == "replied_to" and ref.get("id"):
+                return str(ref["id"])
+    return None
+
+
+def _tweet_is_empty(tweet: Dict[str, Any]) -> bool:
+    """Heuristic for empty/placeholder tweet payloads."""
+    return not bool(tweet.get("id") or tweet.get("text"))
+
+
+def _map_single_tweet_payload(action: str, provider: str, raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Map a single-tweet provider payload to canonical dict shape."""
+    from agent.integrations.all_x.mappers.aisa_to_x import map_aisa_tweet
+
+    data = raw.get("data") if isinstance(raw, dict) and isinstance(raw.get("data"), dict) else raw
+    if isinstance(data, dict):
+        tweet = map_aisa_tweet(data)
+        return {
+            "provider": provider,
+            "action": action,
+            "tweet": _serialize(tweet),
+        }
+    return {"provider": provider, "action": action, "data": raw}
+
+
+def _canonicalize_tweet_response(provider: str, action: str, raw: Dict[str, Any]):
+    """Normalize a tweet_get / article_get raw provider response.
+
+    AISA tweet_detail returns {"code":0, "tweets":[...]}. Official X returns
+    {"data": {<tweet>}}. We unwrap either shape and return:
+        (canonical_dict, is_empty)
+    """
+    from agent.integrations.all_x.mappers.aisa_to_x import map_aisa_tweet
+
+    data = raw.get("data") if isinstance(raw, dict) and isinstance(raw.get("data"), dict) else raw
+
+    # Unwrap outer wrapper like {"code":0, "tweets":[...]}
+    if isinstance(data, dict) and not data.get("id") and not data.get("id_str") and not data.get("text"):
+        for tweets_key in ("tweets", "tweet_list"):
+            candidate = data.get(tweets_key)
+            if isinstance(candidate, list):
+                data = candidate
+                break
+
+    if isinstance(data, list):
+        tweets = [_serialize(map_aisa_tweet(t)) for t in data if isinstance(t, dict)]
+        canonical = {
+            "provider": provider,
+            "action": action,
+            "tweets": tweets,
+            "result_count": len(tweets),
+        }
+        is_empty = not tweets or all(_tweet_is_empty(t) for t in tweets)
+        return canonical, is_empty
+
+    if isinstance(data, dict):
+        tweet_dict = _serialize(map_aisa_tweet(data))
+        canonical = {
+            "provider": provider,
+            "action": action,
+            "tweet": tweet_dict,
+        }
+        return canonical, _tweet_is_empty(tweet_dict)
+
+    # Unknown shape — treat as empty so the caller can decide to fall back / fail.
+    return {"provider": provider, "action": action, "data": raw}, True
+
+
+def _primary_tweet(canonical: Dict[str, Any]):
+    """Return the primary tweet dict from a canonical tweet_get payload, or None."""
+    if not isinstance(canonical, dict):
+        return None
+    if isinstance(canonical.get("tweet"), dict):
+        return canonical["tweet"]
+    tweets = canonical.get("tweets")
+    if isinstance(tweets, list) and tweets and isinstance(tweets[0], dict):
+        return tweets[0]
+    return None
+
+
+def _build_reply_context_chain(start_tweet: Dict[str, Any], route_read_fn, max_depth: int = 20) -> Dict[str, Any]:
+    """Climb reply ancestors until OP (or depth/error/loop) and return context metadata."""
+    chain: List[Dict[str, Any]] = []
+    visited = set()
+
+    current = start_tweet
+    depth = 0
+    stop_reason = "no_parent"
+
+    while depth < max_depth:
+        parent_id = _extract_reply_parent_id(current)
+        if not parent_id:
+            stop_reason = "no_parent"
+            break
+        if parent_id in visited:
+            stop_reason = "loop_detected"
+            break
+
+        visited.add(parent_id)
+
+        # Try auto-route first
+        parent_result = route_read_fn("tweet_get", tweet_id=parent_id)
+        parent_provider = parent_result.get("provider", "aisa")
+        parent_canonical = _map_single_tweet_payload("tweet_get", parent_provider, parent_result.get("raw", {}))
+        parent_tweet = parent_canonical.get("tweet") if isinstance(parent_canonical, dict) else None
+
+        # If auto-route returned an empty payload, try official API explicitly as a best-effort fallback
+        if isinstance(parent_tweet, dict) and _tweet_is_empty(parent_tweet):
+            try:
+                parent_result_official = route_read_fn("tweet_get", provider_override="x_official", tweet_id=parent_id)
+                parent_provider = parent_result_official.get("provider", "x_official")
+                parent_canonical = _map_single_tweet_payload("tweet_get", parent_provider, parent_result_official.get("raw", {}))
+                parent_tweet = parent_canonical.get("tweet") if isinstance(parent_canonical, dict) else None
+            except Exception:
+                pass
+
+        if not isinstance(parent_tweet, dict) or _tweet_is_empty(parent_tweet):
+            stop_reason = "parent_unavailable"
+            chain.append({"id": parent_id, "unavailable": True})
+            break
+
+        chain.append(parent_tweet)
+        current = parent_tweet
+        depth += 1
+    else:
+        stop_reason = "max_depth"
+
+    op = chain[-1] if chain else start_tweet
+    return {
+        "is_reply": _extract_reply_parent_id(start_tweet) is not None,
+        "reply_context_depth": len(chain),
+        "reply_chain": chain,
+        "op_tweet": op,
+        "context_stop_reason": stop_reason,
+    }
+
+
 # ==================== all_x_read ====================
 
 def all_x_read(
@@ -136,25 +278,55 @@ def all_x_read(
             canonical = map_aisa_search_result(raw, query or tweet_id or username or "")
         # Single tweet / article
         elif action in ("tweet_get", "article_get"):
-            from agent.integrations.all_x.mappers.aisa_to_x import map_aisa_tweet
-            data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
-            if isinstance(data, list) and data:
-                tweets = [map_aisa_tweet(t) for t in data if isinstance(t, dict)]
-                canonical = {
-                    "provider": used_provider,
-                    "action": action,
-                    "tweets": [_serialize(t) for t in tweets],
-                    "result_count": len(tweets),
-                }
-            elif isinstance(data, dict):
-                tweet = map_aisa_tweet(data)
-                canonical = {
-                    "provider": used_provider,
-                    "action": action,
-                    "tweet": _serialize(tweet),
-                }
-            else:
-                canonical = {"provider": used_provider, "action": action, "data": raw}
+            canonical, is_empty = _canonicalize_tweet_response(used_provider, action, raw)
+            fallback_meta = None
+
+            # Auto-fallback to official X when AISA returned no usable tweet.
+            # Only fires when the caller did NOT explicitly pin to x_official already.
+            if is_empty and used_provider == "aisa" and provider != "x_official":
+                fb_kwargs = {k: v for k, v in kwargs.items() if k != "provider_override"}
+                fallback_meta = {"attempted": True, "provider": "x_official"}
+                try:
+                    fb_result = route_read(action, provider_override="x_official", **fb_kwargs)
+                    fb_provider = fb_result.get("provider", "x_official")
+                    fb_canonical, fb_empty = _canonicalize_tweet_response(
+                        fb_provider, action, fb_result.get("raw", {})
+                    )
+                    if not fb_empty:
+                        canonical = fb_canonical
+                        used_provider = fb_provider
+                        is_empty = False
+                        fallback_meta["succeeded"] = True
+                    else:
+                        fallback_meta["succeeded"] = False
+                        fallback_meta["reason"] = "x_official also returned empty"
+                except Exception as e:
+                    fallback_meta["succeeded"] = False
+                    fallback_meta["error"] = str(e)
+
+            # Hard-fail when both providers returned nothing usable.
+            # Filing flows must NOT proceed with empty tweets misreported as success.
+            if is_empty:
+                msg = f"{action} returned no tweet content from AISA"
+                if fallback_meta:
+                    err = fallback_meta.get("error") or fallback_meta.get("reason") or "unknown"
+                    msg += f"; x_official fallback failed ({err})"
+                else:
+                    msg += "; x_official fallback skipped (provider explicitly pinned)"
+                msg += f". tweet_id={tweet_id or tweet_ids or '?'}"
+                return tool_error(msg, success=False)
+
+            if fallback_meta is not None:
+                canonical["fallback"] = fallback_meta
+                # Preserve legacy field name for article_get callers
+                if action == "article_get":
+                    canonical["article_fallback"] = fallback_meta
+
+            # Enrich tweet_get with reply ancestry context up to OP.
+            if action == "tweet_get":
+                target = _primary_tweet(canonical)
+                if isinstance(target, dict) and not _tweet_is_empty(target):
+                    canonical["context"] = _build_reply_context_chain(target, route_read_fn=route_read)
         # Follower / relationship / list / community / space results
         else:
             # For actions like followers, following, verified_followers, follow_relationship,
