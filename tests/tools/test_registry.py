@@ -291,10 +291,13 @@ class TestCheckFnExceptionHandling:
 class TestBuiltinDiscovery:
     def test_matches_previous_manual_builtin_tool_set(self):
         expected = {
+            "tools.all_x_tool",
             "tools.browser_tool",
             "tools.clarify_tool",
             "tools.code_execution_tool",
             "tools.cronjob_tools",
+            "tools.knowledge_store_tool",
+            "tools.market_intel_tool",
             "tools.delegate_tool",
             "tools.file_tools",
             "tools.homeassistant_tool",
@@ -313,6 +316,7 @@ class TestBuiltinDiscovery:
             "tools.tts_tool",
             "tools.vision_tools",
             "tools.web_tools",
+            "tools.workflow_tools",
         }
 
         with patch("tools.registry.importlib.import_module"):
