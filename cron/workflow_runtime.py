@@ -118,3 +118,11 @@ def finalize_run_if_done(run_id: str) -> Optional[str]:
         final = "partial"
     update_run(run_id, status=final, finished_at=_hermes_now().isoformat())
     return final
+
+
+def cancel_run(run_id: str) -> None:
+    """Mark all non-terminal steps cancelled and finalize the run."""
+    for s in list_steps_for_run(run_id):
+        if s["status"] not in _TERMINAL:
+            update_step(run_id, s["step_id"], status="cancelled")
+    finalize_run_if_done(run_id)
