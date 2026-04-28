@@ -90,3 +90,16 @@ def test_skip_propagates_when_policy_unsatisfiable(tmp_home):
     update_step(run_id, "a", status="failed", last_error="boom")
     advance(run_id)
     assert get_step(run_id, "b")["status"] == "skipped"
+
+
+def test_cancel_marks_pending_and_running_as_cancelled(tmp_home):
+    from cron.workflow_runtime import cancel_run
+    wf = {"name": "wf", "trigger": {"manual": True}, "steps": [
+        {"id": "a", "package": "p1"},
+        {"id": "b", "package": "p2", "needs": ["a"]},
+    ], "topo_order": ["a", "b"]}
+    run_id = start_run(wf, triggered_by="manual")
+    cancel_run(run_id)
+    assert get_step(run_id, "a")["status"] == "cancelled"
+    assert get_step(run_id, "b")["status"] == "cancelled"
+    assert get_run(run_id)["status"] == "cancelled"
