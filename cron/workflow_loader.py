@@ -4,6 +4,7 @@ Graph and reference checks (cycle detection, package-ID resolution, group
 existence) live in `workflow_dag` to keep DAG concerns separate.
 """
 from __future__ import annotations
+import logging
 from pathlib import Path
 from typing import Any, Dict, List
 import yaml
@@ -11,6 +12,10 @@ import yaml
 from hermes_constants import get_hermes_home
 from cron.jobs import list_jobs
 from cron.workflow_dag import validate_dag
+
+
+_LINT_LOG = logging.getLogger(__name__)
+_LINT_WARNED: set = set()
 
 
 def workflows_dir() -> Path:
@@ -93,6 +98,33 @@ def _available_package_ids() -> set:
     return {j["id"] for j in list_jobs(include_disabled=True)}
 
 
+def _lint_check_cron_packages(wf: Dict[str, Any], path: Path) -> None:
+    """Warn once per (workflow, package) if a referenced package has an active cron schedule.
+
+    The intent: cron jobs that are *only* used as workflow steps should set
+    `schedule.kind: "manual"` so they don't auto-fire alongside the workflow.
+    Emit a warning so operators notice the conflict.
+    """
+    name = wf.get("name", path.stem)
+    for s in wf["steps"]:
+        pkg_id = s["package"]
+        job = next((j for j in list_jobs() if j["id"] == pkg_id), None)
+        if not job:
+            continue
+        sched = job.get("schedule") or {}
+        if sched.get("kind") == "cron" and job.get("enabled", True):
+            key = (name, pkg_id)
+            if key in _LINT_WARNED:
+                continue
+            _LINT_WARNED.add(key)
+            _LINT_LOG.warning(
+                "workflow '%s' references package '%s' which has an active cron schedule "
+                "(%s). Set schedule.kind to 'manual' to prevent the package firing "
+                "independently of the workflow.",
+                name, pkg_id, sched.get("expr", "?"),
+            )
+
+
 def validate_workflow(path: Path) -> Dict[str, Any]:
     """Load + schema-validate + DAG-validate a workflow YAML.
 
@@ -105,4 +137,5 @@ def validate_workflow(path: Path) -> Dict[str, Any]:
     data = load_workflow_file(path)
     validate_schema(data)
     order = validate_dag(data, _available_package_ids())
+    _lint_check_cron_packages(data, path)
     return {**data, "topo_order": order, "_path": str(path)}
