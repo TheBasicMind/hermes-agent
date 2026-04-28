@@ -774,6 +774,10 @@ DEFAULT_CONFIG = {
         # Python tries AAAA records first and hangs for the full TCP timeout
         # before falling back to IPv4.  Set to true to skip IPv6 entirely.
         "force_ipv4": False,
+        # Hard cap for socket.getaddrinfo when force_ipv4 is on. Prevents a
+        # wedged macOS mDNSResponder from hanging inference calls forever.
+        # Only takes effect when force_ipv4 is true.
+        "dns_timeout": 5.0,
     },
 
     # Config schema version - bump this when adding new required fields

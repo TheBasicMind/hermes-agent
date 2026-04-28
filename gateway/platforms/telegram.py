@@ -2212,12 +2212,14 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._is_group_chat(message):
             return True
         thread_id = getattr(message, "message_thread_id", None)
-        if thread_id is not None:
-            try:
-                if int(thread_id) in self._telegram_ignored_threads():
-                    return False
-            except (TypeError, ValueError):
-                logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
+        # Telegram's General topic sends message_thread_id=None; treat it as 1
+        # so that ignored_threads: ['1'] correctly suppresses it.
+        effective_thread_id = int(thread_id) if thread_id is not None else 1
+        try:
+            if effective_thread_id in self._telegram_ignored_threads():
+                return False
+        except (TypeError, ValueError):
+            logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
         if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
             return True
         if not self._telegram_require_mention():

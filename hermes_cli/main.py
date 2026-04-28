@@ -160,7 +160,8 @@ try:
     _early_cfg = _load_config_early()
     _net = _early_cfg.get("network", {})
     if isinstance(_net, dict) and _net.get("force_ipv4"):
-        _apply_ipv4(force=True)
+        _dns_to = float(_net.get("dns_timeout") or 5.0)
+        _apply_ipv4(force=True, dns_timeout=_dns_to)
     del _early_cfg, _net
 except Exception:
     pass  # best-effort — don't crash if config isn't available yet

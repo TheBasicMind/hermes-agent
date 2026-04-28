@@ -8,9 +8,13 @@ Usage:
     skillify create browser
     skillify refresh
     skillify --config /path/to/other.yaml create browser
+    skillify --profile light create image_generate
+    skillify --profile light list
 
 The default config is ``skillify.config.yaml`` next to the Hermes agent root.
-Copy ``scripts/skillify/config.example.yaml`` there to get started.
+For named profiles, the config defaults to ``<profile_dir>/skillify.config.yaml``
+and is bootstrapped automatically on first use.
+Copy ``scripts/skillify/config.example.yaml`` to get started.
 """
 
 from __future__ import annotations
@@ -83,13 +87,59 @@ def _ensure_hermes_path():
         sys.path.insert(0, str(hermes_root))
 
 
+# ---------------------------------------------------------------------------
+# Profile resolution
+# ---------------------------------------------------------------------------
+
+def _get_default_hermes_root() -> Path:
+    """Return the default Hermes root (not a profile sub-directory)."""
+    _ensure_hermes_path()
+    try:
+        from hermes_constants import get_default_hermes_root
+        return get_default_hermes_root()
+    except ImportError:
+        return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+
+
+def _resolve_profile_dir(profile_name: str) -> Path:
+    """Resolve a profile name to its HERMES_HOME directory.
+
+    Mirrors the logic in hermes_cli/profiles.py: 'default' → hermes root,
+    named profiles → <hermes_root>/profiles/<name>.
+    """
+    if profile_name == "default":
+        return _get_default_hermes_root()
+    return _get_default_hermes_root() / "profiles" / profile_name
+
+
+def _profile_config_path(profile_name: str) -> Path:
+    """Return the skillify config path for a named profile."""
+    return _resolve_profile_dir(profile_name) / "skillify.config.yaml"
+
+
+def _bootstrap_profile_config(profile_name: str, profile_dir: Path, config_path: Path) -> None:
+    """Create a minimal skillify.config.yaml for a profile on first use."""
+    output_dir = profile_dir / "hermes-skillify-skills"
+    content = (
+        f"# Skillify capability configuration for profile: {profile_name}\n"
+        f"# Run: skillify --profile {profile_name} create <capability>\n"
+        f"# Also add output_dir to skills.external_dirs in this profile's config.yaml.\n"
+        f"\n"
+        f"output_dir: {output_dir}\n"
+        f"\n"
+        f"capabilities: {{}}\n"
+    )
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(content, encoding="utf-8")
+
+
 def _load_registered_tools() -> Mapping[str, Mapping[str, Any]]:
     """Import every tool module (so registry.register calls fire) and snapshot."""
     _ensure_hermes_path()
     import tools  # noqa: F401
 
     tools_dir = Path(tools.__file__).parent
-    for py in sorted(tools_dir.glob("*_tool.py")):
+    for py in sorted(tools_dir.glob("*_tool*.py")):
         module_name = f"tools.{py.stem}"
         try:
             __import__(module_name)
@@ -233,13 +283,60 @@ def _write(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def do_create(cfg: SkillifyConfig, capability_name: str, tools: Mapping[str, Mapping[str, Any]]) -> None:
+def _auto_capability(
+    capability_name: str,
+    tools: Mapping[str, Mapping[str, Any]],
+) -> "CapabilityConfig | None":
+    """Return a pass-through CapabilityConfig if a matching toolset exists."""
+    if any(m["toolset"] == capability_name for m in tools.values()):
+        return CapabilityConfig(
+            name=capability_name,
+            source_toolset=capability_name,
+            facade_name=f"skd_{capability_name}",
+            operation_mode="pass-through",
+            description=f"{capability_name} capability",
+            emoji="🔧",
+            load_on=[],
+            rename={},
+        )
+    return None
+
+
+def _persist_capability(config_path: Path, cap: CapabilityConfig) -> None:
+    """Append a newly auto-discovered capability to the config file."""
+    doc = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    caps = doc.setdefault("capabilities", {})
+    if cap.name not in caps:
+        caps[cap.name] = {
+            "source_toolset": cap.source_toolset,
+            "facade_name": cap.facade_name,
+            "operation_mode": cap.operation_mode,
+            "description": cap.description,
+        }
+        config_path.write_text(yaml.safe_dump(doc, sort_keys=False, default_flow_style=False), encoding="utf-8")
+
+
+def do_create(
+    cfg: SkillifyConfig,
+    capability_name: str,
+    tools: Mapping[str, Mapping[str, Any]],
+    config_path: Path = None,
+) -> None:
     cap = cfg.capabilities.get(capability_name)
     if cap is None:
-        raise SystemExit(
-            f"Unknown capability {capability_name!r}. Configured: "
-            f"{', '.join(sorted(cfg.capabilities))}."
-        )
+        # Convention: treat the name as a toolset and auto-create pass-through
+        cap = _auto_capability(capability_name, tools)
+        if cap is None:
+            available_toolsets = sorted({m["toolset"] for m in tools.values()})
+            configured = sorted(cfg.capabilities)
+            lines = [f"Unknown capability {capability_name!r}."]
+            if configured:
+                lines.append(f"Configured: {', '.join(configured)}.")
+            lines.append(f"Available toolsets: {', '.join(available_toolsets)}.")
+            raise SystemExit("\n".join(lines))
+        if config_path:
+            _persist_capability(config_path, cap)
+            print(f"Auto-configured '{capability_name}' (pass-through) in {config_path}")
     ops = _ops_for(cap, tools)
 
     skill_dir = cfg.output_dir / cap.facade_name
@@ -310,13 +407,25 @@ def main(argv: List[str] = None) -> int:
         description=(
             "Generate skd_* skill files and adapter YAML for Hermes skillified capabilities.\n\n"
             "Examples:\n"
-            "  skillify list                    # show all capabilities and status\n"
-            "  skillify create browser          # generate/refresh skd_browser\n"
-            "  skillify refresh                 # regenerate all capabilities\n"
-            "  skillify remove browser          # delete skd_browser files\n"
-            "  skillify --config my.yaml create browser"
+            "  skillify list                          # show all capabilities and status\n"
+            "  skillify create browser                # generate/refresh skd_browser\n"
+            "  skillify refresh                       # regenerate all capabilities\n"
+            "  skillify remove browser                # delete skd_browser files\n"
+            "  skillify --config my.yaml create browser\n"
+            "  skillify --profile light list          # list for the 'light' profile\n"
+            "  skillify --profile light create image_generate"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--profile", "-p",
+        default=None,
+        metavar="PROFILE",
+        help=(
+            "Target a named Hermes profile (e.g. 'light'). "
+            "Config defaults to <profile_dir>/skillify.config.yaml and is "
+            "bootstrapped on first use. Omit to use the main hermes config."
+        ),
     )
     parser.add_argument(
         "--config",
@@ -338,11 +447,24 @@ def main(argv: List[str] = None) -> int:
 
     args = parser.parse_args(argv)
 
-    config_path = args.config or _default_config_path()
-    if not config_path.exists():
-        print(f"Config not found: {config_path}", file=sys.stderr)
-        print(f"Copy scripts/skillify/config.example.yaml to {config_path} to get started.", file=sys.stderr)
-        return 1
+    # Resolve config path — profile takes precedence over the default agent config
+    if args.profile:
+        profile_dir = _resolve_profile_dir(args.profile)
+        if args.profile != "default" and not profile_dir.is_dir():
+            print(f"Profile '{args.profile}' does not exist at {profile_dir}", file=sys.stderr)
+            print(f"Create it with: hermes profile create {args.profile}", file=sys.stderr)
+            return 1
+        config_path = args.config or _profile_config_path(args.profile)
+        if not config_path.exists():
+            _bootstrap_profile_config(args.profile, profile_dir, config_path)
+            print(f"Created profile config: {config_path}")
+    else:
+        config_path = args.config or _default_config_path()
+        if not config_path.exists():
+            print(f"Config not found: {config_path}", file=sys.stderr)
+            print(f"Copy scripts/skillify/config.example.yaml to {config_path} to get started.", file=sys.stderr)
+            return 1
+
     cfg = load_config(config_path)
 
     if args.cmd == "list":
@@ -356,7 +478,7 @@ def main(argv: List[str] = None) -> int:
     tools = _load_registered_tools()
 
     if args.cmd == "create":
-        do_create(cfg, args.capability, tools)
+        do_create(cfg, args.capability, tools, config_path=config_path)
     elif args.cmd == "refresh":
         do_refresh(cfg, tools)
     return 0

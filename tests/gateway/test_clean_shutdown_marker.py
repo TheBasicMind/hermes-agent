@@ -224,3 +224,85 @@ class TestCleanShutdownMarker:
             asyncio.get_event_loop().run_until_complete(runner.stop(restart=True))
 
         assert marker.exists(), ".clean_shutdown marker should exist after restart-stop too"
+
+    def test_restart_timeout_still_writes_marker(self, tmp_path, monkeypatch):
+        """Timed-out drain during explicit restart should preserve continuity."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+
+        from gateway.run import GatewayRunner
+        runner = object.__new__(GatewayRunner)
+        runner._restart_requested = False
+        runner._restart_detached = False
+        runner._restart_via_service = False
+        runner._restart_task_started = False
+        runner._running = True
+        runner._draining = False
+        runner._stop_task = None
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._pending_approvals = {}
+        runner._background_tasks = set()
+        runner._shutdown_event = MagicMock()
+        runner._restart_drain_timeout = 0.0
+        runner._exit_code = None
+        runner._exit_reason = None
+        runner.adapters = {}
+        runner.config = GatewayConfig()
+
+        with patch("gateway.run.GatewayRunner._drain_active_agents", new_callable=AsyncMock, return_value=({"s1": None}, True)), \
+             patch("gateway.run.GatewayRunner._finalize_shutdown_agents"), \
+             patch("gateway.run.GatewayRunner._update_runtime_status"), \
+             patch("gateway.run.GatewayRunner._interrupt_running_agents"), \
+             patch("gateway.run.GatewayRunner._running_agent_count", return_value=1), \
+             patch("gateway.status.remove_pid_file"), \
+             patch("tools.process_registry.process_registry") as mock_proc_reg, \
+             patch("tools.terminal_tool.cleanup_all_environments"), \
+             patch("tools.browser_tool.cleanup_all_browsers"):
+            mock_proc_reg.kill_all = MagicMock()
+
+            import asyncio
+            asyncio.get_event_loop().run_until_complete(runner.stop(restart=True))
+
+        assert marker.exists(), ".clean_shutdown marker should exist after timed-out restart"
+
+    def test_shutdown_timeout_without_restart_skips_marker(self, tmp_path, monkeypatch):
+        """Timed-out non-restart shutdown should still skip marker (crash-safety)."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+
+        from gateway.run import GatewayRunner
+        runner = object.__new__(GatewayRunner)
+        runner._restart_requested = False
+        runner._restart_detached = False
+        runner._restart_via_service = False
+        runner._restart_task_started = False
+        runner._running = True
+        runner._draining = False
+        runner._stop_task = None
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._pending_approvals = {}
+        runner._background_tasks = set()
+        runner._shutdown_event = MagicMock()
+        runner._restart_drain_timeout = 0.0
+        runner._exit_code = None
+        runner._exit_reason = None
+        runner.adapters = {}
+        runner.config = GatewayConfig()
+
+        with patch("gateway.run.GatewayRunner._drain_active_agents", new_callable=AsyncMock, return_value=({"s1": None}, True)), \
+             patch("gateway.run.GatewayRunner._finalize_shutdown_agents"), \
+             patch("gateway.run.GatewayRunner._update_runtime_status"), \
+             patch("gateway.run.GatewayRunner._interrupt_running_agents"), \
+             patch("gateway.run.GatewayRunner._running_agent_count", return_value=1), \
+             patch("gateway.status.remove_pid_file"), \
+             patch("tools.process_registry.process_registry") as mock_proc_reg, \
+             patch("tools.terminal_tool.cleanup_all_environments"), \
+             patch("tools.browser_tool.cleanup_all_browsers"):
+            mock_proc_reg.kill_all = MagicMock()
+
+            import asyncio
+            asyncio.get_event_loop().run_until_complete(runner.stop(restart=False))
+
+        assert not marker.exists(), ".clean_shutdown marker should not exist after timed-out non-restart shutdown"

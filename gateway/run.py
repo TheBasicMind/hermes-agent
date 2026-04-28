@@ -325,6 +325,47 @@ def _expand_whatsapp_auth_aliases(identifier: str) -> set:
 
 logger = logging.getLogger(__name__)
 
+
+def _run_startup_dependency_preflight() -> tuple[bool, list[str]]:
+    """Fail-fast dependency checks for configured runtime features.
+
+    Returns:
+        (ok, errors)
+    """
+    import importlib
+
+    errors: list[str] = []
+    cfg = globals().get("_cfg") or {}
+
+    def _require_module(module_name: str, install_hint: str) -> None:
+        try:
+            importlib.import_module(module_name)
+        except Exception:
+            errors.append(f"{module_name} is missing ({install_hint})")
+
+    # MCP HTTP transport preflight (prevents delayed runtime failure in sessions).
+    mcp_servers = cfg.get("mcp_servers", {}) if isinstance(cfg, dict) else {}
+    if isinstance(mcp_servers, dict) and mcp_servers:
+        has_http_server = any(
+            isinstance(server_cfg, dict)
+            and str(server_cfg.get("url", "")).strip().lower().startswith(("http://", "https://"))
+            for server_cfg in mcp_servers.values()
+        )
+        if has_http_server:
+            _require_module("mcp", "pip install 'mcp>=1.2.0,<2'")
+            _require_module(
+                "mcp.client.streamable_http",
+                "pip install 'mcp>=1.24.0,<2'",
+            )
+
+    # all_x official adapter preflight: only enforce when all official creds are present.
+    # (AISA-only read workflows do not need tweepy.)
+    x_official_vars = ["X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"]
+    if all(bool(os.getenv(var, "").strip()) for var in x_official_vars):
+        _require_module("tweepy", "pip install tweepy")
+
+    return (len(errors) == 0, errors)
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -1600,7 +1641,14 @@ class GatewayRunner:
         except Exception:
             pass
 
-    _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
+    # Local patch (TheBasicMind fork): lowered from 3 → 2 restarts. Three
+    # meant a stuck session could waste 20–60 minutes of user time before
+    # auto-suspend kicked in, because each restart's drain + re-suspend +
+    # re-wedge cycle takes several minutes. Two fires on the second confirmed
+    # restart while the same session is active — still resilient to a single
+    # spurious restart, but cuts recovery latency in half. Override with the
+    # ``HERMES_STUCK_LOOP_THRESHOLD`` env var if you want the upstream value.
+    _STUCK_LOOP_THRESHOLD = int(__import__("os").getenv("HERMES_STUCK_LOOP_THRESHOLD", "2"))
     _STUCK_LOOP_FILE = ".restart_failure_counts"
 
     def _increment_restart_failure_counts(self, active_session_keys: set) -> None:
@@ -1853,6 +1901,23 @@ class GatewayRunner:
                 logger.warning("Auto-suspended %d stuck-loop session(s)", stuck)
         except Exception as e:
             logger.debug("Stuck-loop detection failed: %s", e)
+
+        # Local patch (TheBasicMind fork): purge long-suspended session
+        # entries on boot. An entry suspended more than an hour ago is
+        # never being resumed — its provider state and context are stale —
+        # but leaving it in the index risks accidental resume-as-auto-reset
+        # and clutters diagnostics. Default 1h is conservative.
+        try:
+            import os as _os
+            _purge_hours = float(_os.getenv("HERMES_SUSPENDED_PURGE_HOURS", 1.0))
+            _purged = self.session_store.purge_stale_suspended(max_age_hours=_purge_hours)
+            if _purged:
+                logger.info(
+                    "Purged %d stale-suspended session(s) (>%sh old)",
+                    _purged, _purge_hours,
+                )
+        except Exception as e:
+            logger.debug("Stale-suspended purge failed: %s", e)
 
         connected_count = 0
         enabled_platform_count = 0
@@ -2380,13 +2445,19 @@ class GatewayRunner:
 
             # Write a clean-shutdown marker so the next startup knows this
             # wasn't a crash.  suspend_recently_active() only needs to run
-            # after unexpected exits.  However, if the drain timed out and
-            # agents were force-interrupted, their sessions may be in an
-            # incomplete state (trailing tool response, no final assistant
-            # message).  Skip the marker in that case so the next startup
-            # suspends those sessions — giving users a clean slate instead
-            # of resuming a half-finished tool loop.
-            if not timed_out:
+            # after unexpected exits.
+            #
+            # If drain timed out and agents were force-interrupted, sessions
+            # may be incomplete (trailing tool response, no final assistant
+            # message). For ordinary shutdowns, skip the marker so startup
+            # suspends those sessions and gives users a clean slate.
+            #
+            # BUT for explicit restarts (CLI `gateway restart` or `/restart`),
+            # preserve session continuity even when drain timed out. Users
+            # generally expect restart to keep thread context rather than
+            # forcing an auto-reset on first message after reconnect.
+            should_write_clean_marker = (not timed_out) or self._restart_requested
+            if should_write_clean_marker:
                 try:
                     (_hermes_home / ".clean_shutdown").touch()
                 except Exception:
@@ -3932,6 +4003,26 @@ class GatewayRunner:
                 pass
 
             response = agent_result.get("final_response") or ""
+
+            # If /new (or any session boundary operation) rotated this
+            # session's ID while the agent was still running, discard the
+            # stale result instead of sending it into the fresh session.
+            # This hard-guards against the "reset acknowledged, but old turn
+            # still responds" failure mode when interrupt() is not honored in
+            # time by the provider/tool stack.
+            if session_key:
+                try:
+                    current_entry = self.session_store._entries.get(session_key)
+                except Exception:
+                    current_entry = None
+                if current_entry and current_entry.session_id != session_entry.session_id:
+                    logger.info(
+                        "Discarding stale agent result for %s (run session=%s, current=%s)",
+                        session_key[:30],
+                        session_entry.session_id,
+                        current_entry.session_id,
+                    )
+                    return None
 
             # Convert the agent's internal "(empty)" sentinel into a
             # user-friendly message.  "(empty)" means the model failed to
@@ -9739,6 +9830,17 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # Lower root logger level if needed so DEBUG records can reach the handler
         if _stderr_level < logging.getLogger().level:
             logging.getLogger().setLevel(_stderr_level)
+
+    preflight_ok, preflight_errors = _run_startup_dependency_preflight()
+    if not preflight_ok:
+        logger.error("Gateway startup preflight failed (%d issue(s))", len(preflight_errors))
+        for item in preflight_errors:
+            logger.error("  - %s", item)
+        print("\n❌ Gateway preflight failed. Missing runtime dependencies:\n")
+        for item in preflight_errors:
+            print(f"   - {item}")
+        print("\nFix dependencies in the active Hermes venv, then restart the gateway.\n")
+        return False
 
     runner = GatewayRunner(config)
     

@@ -246,35 +246,47 @@ def get_env_path() -> Path:
 # ─── Network Preferences ─────────────────────────────────────────────────────
 
 
-def apply_ipv4_preference(force: bool = False) -> None:
-    """Monkey-patch ``socket.getaddrinfo`` to prefer IPv4 connections.
+def apply_ipv4_preference(force: bool = False, dns_timeout: float = 5.0) -> None:
+    """Monkey-patch ``socket.getaddrinfo`` to prefer IPv4 and enforce a timeout.
 
-    On servers with broken or unreachable IPv6, Python tries AAAA records
-    first and hangs for the full TCP timeout before falling back to IPv4.
-    This affects httpx, requests, urllib, the OpenAI SDK — everything that
-    uses ``socket.getaddrinfo``.
+    Two local patches (Paul / TheBasicMind fork):
 
-    When *force* is True, patches ``getaddrinfo`` so that calls with
-    ``family=AF_UNSPEC`` (the default) resolve as ``AF_INET`` instead,
-    skipping IPv6 entirely.  If no A record exists, falls back to the
-    original unfiltered resolution so pure-IPv6 hosts still work.
+    1. IPv4 preference: on servers with broken or unreachable IPv6, Python
+       tries AAAA records first and hangs for the full TCP timeout before
+       falling back to IPv4. Monkey-patch ``getaddrinfo`` so calls with
+       ``family=AF_UNSPEC`` resolve as ``AF_INET`` instead.
+
+    2. Hard timeout: macOS ``mDNSResponder`` can enter a degraded state for
+       a specific hostname and leave ``getaddrinfo`` calls parked in
+       ``_mdns_search_ex → kevent`` **forever**. There is no upstream DNS
+       timeout available from Python's stdlib resolver call. So we run
+       every ``getaddrinfo`` in a worker thread and wait with a cap. If
+       the cap is exceeded we raise ``socket.gaierror`` — allowing upper
+       layers (inference client → failover) to retry or fall back.
 
     Safe to call multiple times — only patches once.
-    Set ``network.force_ipv4: true`` in ``config.yaml`` to enable.
+    Set ``network.force_ipv4: true`` and optionally ``network.dns_timeout``
+    (seconds, default 5) in ``config.yaml`` to enable.
     """
     if not force:
         return
 
     import socket
+    import concurrent.futures
 
     # Guard against double-patching
     if getattr(socket.getaddrinfo, "_hermes_ipv4_patched", False):
         return
 
     _original_getaddrinfo = socket.getaddrinfo
+    # One small pool, shared across all callers. Threads are cheap; the
+    # point is to be able to *abandon* a wedged lookup.
+    _dns_pool = concurrent.futures.ThreadPoolExecutor(
+        max_workers=4, thread_name_prefix="hermes-dns"
+    )
 
-    def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-        if family == 0:  # AF_UNSPEC — caller didn't request a specific family
+    def _resolve(host, port, family, type, proto, flags):
+        if family == 0:  # AF_UNSPEC — filter to IPv4 first
             try:
                 return _original_getaddrinfo(
                     host, port, socket.AF_INET, type, proto, flags
@@ -283,6 +295,25 @@ def apply_ipv4_preference(force: bool = False) -> None:
                 # No A record — fall back to full resolution (pure-IPv6 hosts)
                 return _original_getaddrinfo(host, port, family, type, proto, flags)
         return _original_getaddrinfo(host, port, family, type, proto, flags)
+
+    def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        # Never time out for locally-resolvable hosts — it'd just be wasteful.
+        if isinstance(host, str) and (
+            host in ("localhost", "127.0.0.1", "::1") or host.endswith(".local")
+        ):
+            return _resolve(host, port, family, type, proto, flags)
+        future = _dns_pool.submit(_resolve, host, port, family, type, proto, flags)
+        try:
+            return future.result(timeout=dns_timeout)
+        except concurrent.futures.TimeoutError:
+            # Leave the wedged worker thread to be reaped by the OS — we
+            # cannot forcibly interrupt a C-level getaddrinfo call. Raise
+            # gaierror so callers treat this as a resolution failure and
+            # trigger failover, rather than hanging forever.
+            raise socket.gaierror(
+                f"hermes: getaddrinfo({host!r}) timed out after {dns_timeout}s "
+                f"(see network.dns_timeout in config.yaml)"
+            )
 
     _ipv4_getaddrinfo._hermes_ipv4_patched = True  # type: ignore[attr-defined]
     socket.getaddrinfo = _ipv4_getaddrinfo  # type: ignore[assignment]

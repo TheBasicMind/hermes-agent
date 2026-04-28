@@ -824,6 +824,32 @@ class SessionStore:
                 self._save()
         return count
 
+    def purge_stale_suspended(self, max_age_hours: float = 1.0) -> int:
+        """Drop suspended entries that haven't been touched in *max_age_hours*.
+
+        Local patch (TheBasicMind fork): a session suspended more than an
+        hour ago represents work we're certainly never resuming — its prompt
+        context is stale and the reason it was suspended (stuck API call,
+        network wedge) is long past. Leaving it in the index clutters
+        ``hermes status``/``sessions.json`` and risks being "resumed" as an
+        auto-reset placeholder that still leaks metadata (thread_id,
+        display_name) into fresh conversations. Purge them cleanly.
+        """
+        from datetime import timedelta
+
+        cutoff = _now() - timedelta(hours=max_age_hours)
+        removed = 0
+        with self._lock:
+            self._ensure_loaded_locked()
+            for key in list(self._entries.keys()):
+                entry = self._entries[key]
+                if entry.suspended and entry.updated_at < cutoff:
+                    del self._entries[key]
+                    removed += 1
+            if removed:
+                self._save()
+        return removed
+
     def reset_session(self, session_key: str) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
         db_end_session_id = None

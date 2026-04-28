@@ -10,11 +10,17 @@ Persistent data lives under:
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
+import mimetypes
 import os
+import shutil
 import sys
-from dataclasses import asdict
+import tempfile
+import urllib.parse
+import urllib.request
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,14 +30,72 @@ from tools.registry import registry, tool_error
 
 HERMES_HOME = get_hermes_home()
 MARKET_INTEL_DB = HERMES_HOME / "data" / "openclaw" / "market-intel" / "intake.db"
+MARKET_INTEL_MEDIA_CACHE_DIR = HERMES_HOME / "data" / "openclaw" / "market-intel" / "media-cache"
 MARKET_INTEL_SCRIPTS = HERMES_HOME / "integrations" / "openclaw" / "market-intel" / "scripts"
 KNOWLEDGE_URI_SCRIPTS = HERMES_HOME / "integrations" / "openclaw" / "knowledge-store" / "scripts"
 
 _MARKET_MODULES = ["config", "db", "models", "intake_api", "uri"]
 
 
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _cache_media_file(local_path: str, media_url: str, mime_type: str | None = None) -> tuple[str, str, int]:
+    """Copy local media file into managed market-intel media cache and return (cached_path, sha256, size_bytes)."""
+    src = Path(local_path).expanduser().resolve()
+    if not src.exists() or not src.is_file():
+        raise FileNotFoundError(f"local_path not found or not a file: {src}")
+
+    sha = _sha256_file(src)
+    size_bytes = src.stat().st_size
+
+    ext = src.suffix
+    if not ext and mime_type:
+        guessed = mimetypes.guess_extension(mime_type)
+        ext = guessed or ""
+
+    # Preserve some source identity for debugging while keeping dedupe by hash stable.
+    parsed = urllib.parse.urlparse(media_url)
+    base_name = Path(parsed.path).name or "media"
+    safe_base = "".join(ch for ch in base_name if ch.isalnum() or ch in ("-", "_", "."))[:80] or "media"
+    cached_name = f"{sha[:16]}_{safe_base}"
+    if ext and not cached_name.endswith(ext):
+        cached_name = f"{cached_name}{ext}"
+
+    MARKET_INTEL_MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    dest = (MARKET_INTEL_MEDIA_CACHE_DIR / cached_name).resolve()
+    if not dest.exists():
+        shutil.copy2(src, dest)
+
+    return str(dest), sha, size_bytes
+
+
+def _download_remote_media(media_url: str) -> tuple[str, str | None]:
+    """Download remote media URL to a temp file. Returns (temp_path, content_type)."""
+    req = urllib.request.Request(
+        media_url,
+        headers={
+            "User-Agent": "HermesMarketIntel/1.0",
+            "Accept": "*/*",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        content_type = resp.headers.get("Content-Type")
+        with tempfile.NamedTemporaryFile(delete=False, prefix="mi-media-", suffix=".bin") as tmp:
+            shutil.copyfileobj(resp, tmp)
+            return tmp.name, content_type
+
+
 def _parse_metadata(raw: str | None) -> dict[str, Any] | None:
-    if raw is None:
+    if raw is None or str(raw).strip() == "":
         return None
     parsed = json.loads(raw)
     if not isinstance(parsed, dict):
@@ -81,6 +145,13 @@ def market_intel_intake(
     metadata: str | None = None,
     content_type: str | None = None,
     kb_record_id: str | None = None,
+    asset_id: str | None = None,
+    media_url: str | None = None,
+    local_path: str | None = None,
+    platform: str | None = None,
+    media_type: str | None = None,
+    mime_type: str | None = None,
+    limit: int | None = None,
 ) -> str:
     try:
         store = _load_market_store()
@@ -98,6 +169,8 @@ def market_intel_intake(
                     metadata=parsed_metadata,
                     content_type=content_type,
                 )
+                if is_dataclass(result):
+                    result = asdict(result)
             elif action == "add_pre_extracted":
                 if not url or not title or not kb_record_id:
                     return tool_error(
@@ -114,6 +187,86 @@ def market_intel_intake(
                     metadata=parsed_metadata,
                     content_type=content_type,
                 )
+                if is_dataclass(result):
+                    result = asdict(result)
+            elif action == "cache_media":
+                if not url or not media_url or not local_path:
+                    return tool_error(
+                        "url, media_url, and local_path are required for cache_media",
+                        success=False,
+                    )
+                cached_path, sha256, size_bytes = _cache_media_file(
+                    local_path=local_path,
+                    media_url=media_url,
+                    mime_type=mime_type,
+                )
+                result = store.cache_media(
+                    source_url=url,
+                    original_media_url=media_url,
+                    cached_path=cached_path,
+                    candidate_id=candidate_id,
+                    platform=platform,
+                    media_type=media_type,
+                    mime_type=mime_type,
+                    sha256=sha256,
+                    size_bytes=size_bytes,
+                    metadata=parsed_metadata,
+                )
+                record = result.get("record") if isinstance(result, dict) else None
+                if is_dataclass(record):
+                    result["record"] = asdict(record)
+            elif action == "cache_media_remote":
+                if not url or not media_url:
+                    return tool_error(
+                        "url and media_url are required for cache_media_remote",
+                        success=False,
+                    )
+                temp_path = None
+                try:
+                    temp_path, downloaded_mime = _download_remote_media(media_url)
+                    effective_mime = mime_type or downloaded_mime
+                    cached_path, sha256, size_bytes = _cache_media_file(
+                        local_path=temp_path,
+                        media_url=media_url,
+                        mime_type=effective_mime,
+                    )
+                finally:
+                    if temp_path:
+                        try:
+                            Path(temp_path).unlink(missing_ok=True)
+                        except Exception:
+                            pass
+
+                result = store.cache_media(
+                    source_url=url,
+                    original_media_url=media_url,
+                    cached_path=cached_path,
+                    candidate_id=candidate_id,
+                    platform=platform,
+                    media_type=media_type,
+                    mime_type=(mime_type or downloaded_mime),
+                    sha256=sha256,
+                    size_bytes=size_bytes,
+                    metadata=parsed_metadata,
+                )
+                record = result.get("record") if isinstance(result, dict) else None
+                if is_dataclass(record):
+                    result["record"] = asdict(record)
+            elif action == "get_media":
+                if not asset_id:
+                    return tool_error("asset_id is required for get_media", success=False)
+                media = store.get_cached_media(asset_id)
+                result = asdict(media) if media else None
+            elif action == "list_media":
+                media = store.list_cached_media(
+                    source_url=url,
+                    candidate_id=candidate_id,
+                    platform=platform,
+                    limit=limit or 100,
+                )
+                result = [asdict(m) for m in media]
+            elif action == "media_stats":
+                result = store.cached_media_stats()
             elif action == "has_url":
                 if not url:
                     return tool_error("url is required for has_url", success=False)
@@ -127,7 +280,7 @@ def market_intel_intake(
                 result = store.stats()
             else:
                 return tool_error(
-                    f"Unknown action '{action}'. Use: add_candidate, add_pre_extracted, has_url, get_candidate, stats",
+                    f"Unknown action '{action}'. Use: add_candidate, add_pre_extracted, cache_media, cache_media_remote, get_media, list_media, media_stats, has_url, get_candidate, stats",
                     success=False,
                 )
             return json.dumps({
@@ -203,14 +356,17 @@ MARKET_INTEL_INTAKE_SCHEMA = {
     "description": (
         "Operate the market-intel intake database copied from OpenClaw into Hermes. "
         f"Backed by {display_hermes_home()}/data/openclaw/market-intel/intake.db. "
-        "Use for candidate URL intake, existence checks, pre-extracted synth records, candidate lookup, and intake stats."
+        "Use for candidate URL intake, existence checks, pre-extracted synth records, candidate lookup, media caching, and intake stats."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add_candidate", "add_pre_extracted", "has_url", "get_candidate", "stats"],
+                "enum": [
+                    "add_candidate", "add_pre_extracted", "cache_media", "cache_media_remote", "get_media", "list_media", "media_stats",
+                    "has_url", "get_candidate", "stats"
+                ],
                 "description": "Operation to perform."
             },
             "url": {"type": "string", "description": "Candidate URL or synthetic URI."},
@@ -221,7 +377,14 @@ MARKET_INTEL_INTAKE_SCHEMA = {
             "source_type": {"type": "string", "description": "Source type such as rss, synth, api."},
             "metadata": {"type": "string", "description": "Optional JSON object encoded as a string."},
             "content_type": {"type": "string", "description": "Optional content type classification."},
-            "kb_record_id": {"type": "string", "description": "Knowledge-store record UUID for add_pre_extracted."}
+            "kb_record_id": {"type": "string", "description": "Knowledge-store record UUID for add_pre_extracted."},
+            "asset_id": {"type": "string", "description": "Cached media asset UUID for get_media."},
+            "media_url": {"type": "string", "description": "Original remote media URL for cache_media."},
+            "local_path": {"type": "string", "description": "Local downloaded media path for cache_media."},
+            "platform": {"type": "string", "description": "Platform label (x, youtube, instagram, etc)."},
+            "media_type": {"type": "string", "description": "Media type (image, video, audio, gif, document, etc)."},
+            "mime_type": {"type": "string", "description": "Optional MIME type for cached media."},
+            "limit": {"type": "integer", "description": "Optional max rows for list_media."}
         },
         "required": ["action"]
     }
@@ -272,6 +435,13 @@ registry.register(
         metadata=args.get("metadata"),
         content_type=args.get("content_type"),
         kb_record_id=args.get("kb_record_id"),
+        asset_id=args.get("asset_id"),
+        media_url=args.get("media_url"),
+        local_path=args.get("local_path"),
+        platform=args.get("platform"),
+        media_type=args.get("media_type"),
+        mime_type=args.get("mime_type"),
+        limit=args.get("limit"),
     ),
     emoji="📡",
 )

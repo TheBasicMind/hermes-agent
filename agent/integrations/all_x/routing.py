@@ -33,12 +33,12 @@ _AISA_PRIMARY_READS = {
     "user_get", "user_search", "user_timeline", "user_mentions",
     "followers", "following", "verified_followers", "follow_relationship",
     "tweet_get", "tweet_search", "tweet_replies", "tweet_quotes",
-    "tweet_retweeters", "tweet_thread",
+    "tweet_retweeters", "tweet_thread", "article_get",
 }
 
-# AISA-only reads (no official X fallback)
+# AISA-first reads that do not currently have official-X fallback in our adapter
 _AISA_ONLY_READS = {
-    "article_get", "trends", "list_members", "list_followers",
+    "trends", "list_members", "list_followers",
     "community_info", "community_members", "community_moderators",
     "community_tweets", "space_detail",
 }
@@ -239,6 +239,9 @@ def _execute_x_official_read(action: str, **kwargs) -> Dict[str, Any]:
     action_map = {
         "user_get": lambda: adapter.user_get(kwargs.get("username", "")),
         "tweet_get": lambda: adapter.tweet_get(kwargs.get("tweet_id", "")),
+        # Best-effort fallback for article_get: attempt post lookup by provided ID.
+        # If the ID is a true /i/article identifier (not a post ID), official API may return not found.
+        "article_get": lambda: adapter.tweet_get(kwargs.get("tweet_id", "")),
     }
 
     handler = action_map.get(action)

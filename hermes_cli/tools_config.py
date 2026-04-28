@@ -59,6 +59,8 @@ CONFIGURABLE_TOOLSETS = [
     ("skills",          "📚 Skills",                    "list, view, manage"),
     ("todo",            "📋 Task Planning",             "todo"),
     ("memory",          "💾 Memory",                    "persistent memory across sessions"),
+    ("knowledge_store", "📚 Knowledge Store",           "store, search, and retrieve fetched content with embeddings"),
+    ("market_intel",    "📡 Market Intel",              "candidate URL pipeline: intake, scoring, extraction queue"),
     ("session_search",  "🔎 Session Search",            "search past conversations"),
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
@@ -66,12 +68,13 @@ CONFIGURABLE_TOOLSETS = [
     ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
     ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
+    ("all_x",           "𝕏 X / Twitter",                "read, search, post on X (Twitter)"),
 ]
 
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "all_x"}
 
 
 def _get_effective_configurable_toolsets():
@@ -352,6 +355,40 @@ TOOL_CATEGORIES = {
             },
         ],
     },
+    "all_x": {
+        "name": "X / Twitter",
+        "icon": "𝕏",
+        "providers": [
+            {
+                "name": "Read + Search + Write (full)",
+                "badge": "recommended",
+                "tag": "All three tools: read/feeds (AISA), Grok search (xAI), posting (X API)",
+                "env_vars": [
+                    {"key": "AISA_API_KEY",            "prompt": "AISA API key (read/feeds)",          "url": "https://aisa.ai"},
+                    {"key": "XAI_API_KEY",             "prompt": "xAI API key (Grok search)",          "url": "https://console.x.ai/"},
+                    {"key": "X_API_KEY",               "prompt": "X API key (posting/write)"},
+                    {"key": "X_API_SECRET",            "prompt": "X API secret"},
+                    {"key": "X_ACCESS_TOKEN",          "prompt": "X access token"},
+                    {"key": "X_ACCESS_TOKEN_SECRET",   "prompt": "X access token secret"},
+                ],
+            },
+            {
+                "name": "Read + Search only",
+                "tag": "read/feeds (AISA) + Grok semantic search (xAI) — no posting",
+                "env_vars": [
+                    {"key": "AISA_API_KEY",  "prompt": "AISA API key (read/feeds)",  "url": "https://aisa.ai"},
+                    {"key": "XAI_API_KEY",   "prompt": "xAI API key (Grok search)",  "url": "https://console.x.ai/"},
+                ],
+            },
+            {
+                "name": "Read only",
+                "tag": "read/feeds via AISA only — no search or posting",
+                "env_vars": [
+                    {"key": "AISA_API_KEY",  "prompt": "AISA API key",  "url": "https://aisa.ai"},
+                ],
+            },
+        ],
+    },
     "rl": {
         "name": "RL Training",
         "icon": "🧪",
@@ -373,8 +410,9 @@ TOOL_CATEGORIES = {
 # Simple env-var requirements for toolsets NOT in TOOL_CATEGORIES.
 # Used as a fallback for tools like vision/moa that just need an API key.
 TOOLSET_ENV_REQUIREMENTS = {
-    "vision":     [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
-    "moa":        [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
+    "vision":          [("OPENROUTER_API_KEY",  "https://openrouter.ai/keys")],
+    "moa":             [("OPENROUTER_API_KEY",  "https://openrouter.ai/keys")],
+    "knowledge_store": [("TOGETHER_API_KEY",    "https://api.together.xyz/settings/api-keys")],
 }
 
 

@@ -59,23 +59,25 @@ def map_aisa_user(raw: Dict[str, Any]) -> XUser:
     if not isinstance(metrics_raw, dict):
         metrics_raw = {}
 
-    # AISA sometimes puts metrics at top level
+    # AISA sometimes puts metrics at top level (camelCase or snake_case)
     metrics = XUserMetrics(
         followers_count=_int_or_none(metrics_raw.get("followers_count") or raw.get("followers_count") or raw.get("followers")),
-        following_count=_int_or_none(metrics_raw.get("following_count") or raw.get("following_count") or raw.get("followings_count")),
-        tweet_count=_int_or_none(metrics_raw.get("tweet_count") or raw.get("statuses_count") or raw.get("tweet_count")),
+        following_count=_int_or_none(metrics_raw.get("following_count") or raw.get("following_count") or raw.get("followings_count") or raw.get("following")),
+        tweet_count=_int_or_none(metrics_raw.get("tweet_count") or raw.get("statusesCount") or raw.get("statuses_count") or raw.get("tweet_count")),
         listed_count=_int_or_none(metrics_raw.get("listed_count") or raw.get("listed_count")),
     )
+
+    profile_image = raw.get("profile_image_url") or raw.get("profile_image_url_https") or raw.get("profilePicture")
 
     return XUser(
         id=user_id,
         username=username,
         name=name,
-        description=raw.get("description") or raw.get("bio"),
-        created_at=raw.get("created_at"),
-        verified=raw.get("verified"),
-        verified_type=raw.get("verified_type"),
-        profile_image_url=raw.get("profile_image_url") or raw.get("profile_image_url_https"),
+        description=raw.get("description") or raw.get("bio") or raw.get("profile_bio", {}).get("description") if isinstance(raw.get("profile_bio"), dict) else raw.get("description"),
+        created_at=raw.get("createdAt") or raw.get("created_at"),
+        verified=raw.get("verified") or raw.get("isBlueVerified"),
+        verified_type=raw.get("verified_type") or ("blue" if raw.get("isBlueVerified") else None),
+        profile_image_url=profile_image,
         public_metrics=metrics,
         url=raw.get("url"),
         location=raw.get("location"),
@@ -95,12 +97,12 @@ def map_aisa_tweet(raw: Dict[str, Any], includes_users: Optional[Dict[str, XUser
         metrics_raw = {}
 
     metrics = XTweetMetrics(
-        retweet_count=_int_or_none(metrics_raw.get("retweet_count") or raw.get("retweet_count") or raw.get("retweets") or raw.get("reposts")),
-        reply_count=_int_or_none(metrics_raw.get("reply_count") or raw.get("reply_count") or raw.get("replies")),
-        like_count=_int_or_none(metrics_raw.get("like_count") or raw.get("like_count") or raw.get("likes") or raw.get("favorite_count")),
-        quote_count=_int_or_none(metrics_raw.get("quote_count") or raw.get("quote_count") or raw.get("quotes")),
-        bookmark_count=_int_or_none(metrics_raw.get("bookmark_count") or raw.get("bookmark_count") or raw.get("bookmarks")),
-        impression_count=_int_or_none(metrics_raw.get("impression_count") or raw.get("impression_count") or raw.get("views") or raw.get("view_count")),
+        retweet_count=_int_or_none(metrics_raw.get("retweet_count") or raw.get("retweetCount") or raw.get("retweet_count") or raw.get("retweets") or raw.get("reposts")),
+        reply_count=_int_or_none(metrics_raw.get("reply_count") or raw.get("replyCount") or raw.get("reply_count") or raw.get("replies")),
+        like_count=_int_or_none(metrics_raw.get("like_count") or raw.get("likeCount") or raw.get("like_count") or raw.get("likes") or raw.get("favorite_count")),
+        quote_count=_int_or_none(metrics_raw.get("quote_count") or raw.get("quoteCount") or raw.get("quote_count") or raw.get("quotes")),
+        bookmark_count=_int_or_none(metrics_raw.get("bookmark_count") or raw.get("bookmarkCount") or raw.get("bookmark_count") or raw.get("bookmarks")),
+        impression_count=_int_or_none(metrics_raw.get("impression_count") or raw.get("viewCount") or raw.get("impression_count") or raw.get("views") or raw.get("view_count")),
     )
 
     # Author resolution — inline or from includes
@@ -147,6 +149,23 @@ def map_aisa_tweet(raw: Dict[str, Any], includes_users: Optional[Dict[str, XUser
             XReferencedTweet(type=r.get("type", ""), id=str(r.get("id", "")))
             for r in ref_raw if isinstance(r, dict) and r.get("id")
         ]
+
+    # AISA often exposes relationship fields directly instead of referenced_tweets
+    # (e.g., in_reply_to_status_id / quoted_status_id / retweeted_status_id)
+    if ref_tweets is None:
+        from ..models import XReferencedTweet
+        derived_refs = []
+        reply_id = raw.get("in_reply_to_status_id") or raw.get("in_reply_to_status_id_str")
+        quote_id = raw.get("quoted_status_id") or raw.get("quoted_status_id_str")
+        retweet_id = raw.get("retweeted_status_id") or raw.get("retweeted_status_id_str")
+        if reply_id:
+            derived_refs.append(XReferencedTweet(type="replied_to", id=str(reply_id)))
+        if quote_id:
+            derived_refs.append(XReferencedTweet(type="quoted", id=str(quote_id)))
+        if retweet_id:
+            derived_refs.append(XReferencedTweet(type="retweeted", id=str(retweet_id)))
+        if derived_refs:
+            ref_tweets = derived_refs
 
     # Entities
     entities = None
