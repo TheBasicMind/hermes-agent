@@ -5506,6 +5506,14 @@ def cmd_cronjob(args):
     cronjob_command(args)
 
 
+def cmd_workflow(args):
+    """Workflow management."""
+    from hermes_cli.workflow import workflow_command
+    rc = workflow_command(args)
+    if rc:
+        sys.exit(rc)
+
+
 def cmd_webhook(args):
     """Webhook subscription management."""
     from hermes_cli.webhook import webhook_command
@@ -8868,6 +8876,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "auth",
         "status",
         "cron",
+        "workflow",
         "doctor",
         "config",
         "pairing",
@@ -10441,6 +10450,56 @@ def main():
     _add_accept_hooks_flag(cron_tick)
     _add_accept_hooks_flag(cron_parser)
     cron_parser.set_defaults(func=cmd_cron)
+
+    # =========================================================================
+    # workflow command
+    # =========================================================================
+    workflow_parser = subparsers.add_parser(
+        "workflow",
+        help="Workflow management",
+        description="List, validate, run, and inspect workflows",
+    )
+    workflow_subparsers = workflow_parser.add_subparsers(dest="workflow_command")
+
+    # workflow list
+    wf_list = workflow_subparsers.add_parser("list", help="List workflows in active profile")
+    wf_list.add_argument("--json", action="store_true", help="Output JSON")
+
+    # workflow show <name>
+    wf_show = workflow_subparsers.add_parser("show", help="Show workflow definition")
+    wf_show.add_argument("name", help="Workflow name (YAML stem)")
+    wf_show.add_argument("--json", action="store_true", help="Output JSON")
+
+    # workflow validate <name>
+    wf_validate = workflow_subparsers.add_parser("validate", help="Validate a workflow")
+    wf_validate.add_argument("name", help="Workflow name (YAML stem)")
+    wf_validate.add_argument("--json", action="store_true", help="Output JSON")
+
+    # workflow run <name>
+    wf_run = workflow_subparsers.add_parser("run", help="Manually trigger a workflow")
+    wf_run.add_argument("name", help="Workflow name (YAML stem)")
+
+    # workflow runs [<name>]
+    wf_runs = workflow_subparsers.add_parser("runs", help="List runs (optionally filtered by workflow)")
+    wf_runs.add_argument("name", nargs="?", default=None, help="Optional workflow name filter")
+    wf_runs.add_argument("--json", action="store_true", help="Output JSON")
+
+    # workflow status <run_id>
+    wf_status = workflow_subparsers.add_parser("status", help="Show run + step states")
+    wf_status.add_argument("run_id", help="Workflow run ID")
+    wf_status.add_argument("--json", action="store_true", help="Output JSON")
+
+    # workflow logs <run_id> [--step <step_id>]
+    wf_logs = workflow_subparsers.add_parser("logs", help="Fetch run/step result or error")
+    wf_logs.add_argument("run_id", help="Workflow run ID")
+    wf_logs.add_argument("--step", help="Filter to a specific step ID")
+    wf_logs.add_argument("--json", action="store_true", help="Output JSON")
+
+    # workflow cancel <run_id>
+    wf_cancel = workflow_subparsers.add_parser("cancel", help="Cancel an in-flight run")
+    wf_cancel.add_argument("run_id", help="Workflow run ID")
+
+    workflow_parser.set_defaults(func=cmd_workflow)
 
     cronjob_parser = subparsers.add_parser(
         "cronjob",
