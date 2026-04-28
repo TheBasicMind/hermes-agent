@@ -88,7 +88,9 @@ def validate_schema(data: Dict[str, Any]) -> None:
 
 
 def _available_package_ids() -> set:
-    return {j["id"] for j in list_jobs()}
+    # include_disabled=True: workflows can reference disabled packages
+    # (queue runs them on demand independent of cron pause/enable state).
+    return {j["id"] for j in list_jobs(include_disabled=True)}
 
 
 def validate_workflow(path: Path) -> Dict[str, Any]:
