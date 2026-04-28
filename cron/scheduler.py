@@ -906,6 +906,118 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
+def run_job_in_subprocess(
+    job: dict,
+    *,
+    env_overrides: Optional[dict] = None,
+) -> dict:
+    """Execute a cron job via the worker and return a subprocess-shaped result.
+
+    This is the worker-invocation primitive used by the workflow dispatcher
+    (and any other caller that wants the worker's behaviour without coupling
+    to ``tick()``'s delivery / advance / mark_run pipeline).
+
+    The current Hermes worker (:func:`run_job`) runs the agent in-process
+    rather than spawning ``hermes-agent`` as a subprocess.  We preserve the
+    subprocess-style return contract so callers (e.g. the workflow
+    dispatcher) can be written against a single shape:
+
+        {"exit_code": int, "stdout": str, "stderr": str | None}
+
+    - ``stdout``  -> the agent's ``final_response`` (what would be delivered)
+    - ``stderr``  -> the worker's error message on failure, else ``None``
+    - ``exit_code`` -> 0 on success, 1 on failure
+
+    Args:
+        job: Cron-job dict, same shape ``run_job`` accepts.
+        env_overrides: Extra env vars to layer on top of ``os.environ`` for the
+            duration of this call.  Used by the workflow dispatcher to inject
+            ``HERMES_WORKFLOW_RUN_ID`` and ``HERMES_WORKFLOW_NEEDS_FILE``.
+            ``None`` (the default) leaves the environment untouched.
+
+    Returns:
+        ``{"exit_code", "stdout", "stderr"}`` — see contract above.
+    """
+    overrides = env_overrides or {}
+    # Snapshot only the keys we touch so we can restore them precisely
+    # (preserving "was unset" vs "was set to ''").
+    _saved: dict[str, Optional[str]] = {
+        key: os.environ.get(key) for key in overrides
+    }
+    try:
+        for key, value in overrides.items():
+            os.environ[str(key)] = str(value)
+        success, _output, final_response, error = run_job(job)
+    finally:
+        for key, prior in _saved.items():
+            if prior is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prior
+
+    return {
+        "exit_code": 0 if success else 1,
+        "stdout": final_response or "",
+        "stderr": None if success else error,
+    }
+
+
+def _tick_workflows(now):
+    """Advance in-flight workflow runs and start new ones whose cron trigger fires."""
+    from datetime import datetime, timedelta
+
+    try:
+        from croniter import croniter
+    except ImportError:
+        # croniter is optional at runtime per pyproject; if absent, skip workflow scheduling
+        logger.debug("croniter not available; skipping workflow tick")
+        return
+
+    from cron.workflow_loader import list_workflow_files, validate_workflow
+    from cron.workflow_runtime import (
+        start_run, advance, finalize_run_if_done,
+    )
+    from cron.workflow_dispatcher import dispatch_step
+    from cron.workflow_concurrency import can_start_run
+    from cron.workflow_storage import list_runs, list_steps_for_run
+
+    paths = list_workflow_files()
+    for path in paths:
+        try:
+            wf = validate_workflow(path)
+        except Exception as exc:
+            logger.warning("workflow %s invalid: %s", path.name, exc)
+            continue
+
+        # 1) Advance in-flight runs of this workflow.
+        for r in list_runs(wf["name"]):
+            if r["status"] != "running":
+                continue
+            ready = advance(r["run_id"])
+            for sid in ready:
+                dispatch_step(r["run_id"], sid)
+            finalize_run_if_done(r["run_id"])
+
+        # 2) Start a new run if the cron trigger is due.
+        trig = wf.get("trigger", {})
+        if "cron" not in trig:
+            continue
+        try:
+            base = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+            it = croniter(trig["cron"], base)
+            due_at = it.get_next(datetime)
+        except Exception as exc:
+            logger.warning("workflow %s: invalid cron expression: %s", wf["name"], exc)
+            continue
+        if due_at <= now and can_start_run(
+            wf["name"], max_concurrent_runs=wf.get("max_concurrent_runs", 1)
+        ):
+            run_id = start_run(wf, triggered_by="cron")
+            for s in list_steps_for_run(run_id):
+                if s["status"] == "ready":
+                    dispatch_step(run_id, s["step_id"])
+
+
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     """
     Check and run all due jobs.
@@ -942,6 +1054,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         if verbose and not due_jobs:
             logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
+            _tick_workflows(_hermes_now())
             return 0
 
         if verbose:
@@ -993,6 +1106,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 logger.error("Error processing job %s: %s", job['id'], e)
                 mark_job_run(job["id"], False, str(e))
 
+        _tick_workflows(_hermes_now())
         return executed
     finally:
         if fcntl:
