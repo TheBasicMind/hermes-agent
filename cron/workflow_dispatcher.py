@@ -18,6 +18,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from cron.scheduler import run_job_in_subprocess
+from cron.workflow_concurrency import acquire_group_slot, release_group_slot
 from cron.workflow_context import render_preamble, write_needs_file
 from cron.workflow_runtime import advance, finalize_run_if_done
 from cron.workflow_storage import get_run, get_step, update_step
@@ -87,20 +88,36 @@ def dispatch_step(run_id: str, step_id: str) -> None:
         "prompt": preamble + (snap.get("prompt") or ""),
     }
 
+    step_def = next((s for s in wf["steps"] if s["id"] == step_id), {})
+    group = step_def.get("group")
+    group_policy = (
+        (wf.get("concurrency_group_defaults") or {}).get(group) if group else None
+    )
+
+    slot_acquired = False
+    if group and group_policy:
+        if not acquire_group_slot(group, group_policy):
+            return  # leave step in 'ready'; retried next tick
+        slot_acquired = True
+
     update_step(run_id, step_id, status="running")
     try:
-        result = _run_worker(job_for_worker, env=env)
-    except Exception as exc:
-        update_step(run_id, step_id, status="failed",
-                    last_error=str(exc)[:1000])
-    else:
-        stdout = (result.get("stdout") or "")[:_RESULT_CAP_BYTES]
-        if result.get("exit_code", 0) == 0:
-            update_step(run_id, step_id, status="succeeded", result=stdout)
-        else:
-            err_text = result.get("stderr") or stdout
+        try:
+            result = _run_worker(job_for_worker, env=env)
+        except Exception as exc:
             update_step(run_id, step_id, status="failed",
-                        last_error=err_text[:1000])
+                        last_error=str(exc)[:1000])
+        else:
+            stdout = (result.get("stdout") or "")[:_RESULT_CAP_BYTES]
+            if result.get("exit_code", 0) == 0:
+                update_step(run_id, step_id, status="succeeded", result=stdout)
+            else:
+                err_text = result.get("stderr") or stdout
+                update_step(run_id, step_id, status="failed",
+                            last_error=err_text[:1000])
+    finally:
+        if slot_acquired:
+            release_group_slot(group)
 
     advance(run_id)
     finalize_run_if_done(run_id)
