@@ -68,3 +68,26 @@ def test_list_workflow_files_returns_empty_when_dir_missing(tmp_path, monkeypatc
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from cron.workflow_loader import list_workflow_files
     assert list_workflow_files() == []
+
+
+def test_validate_workflow_end_to_end(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "cron").mkdir()
+    (tmp_path / "cron" / "jobs.json").write_text(
+        '{"jobs": [{"id": "p1", "name": "P1", "prompt": "...", "schedule": {"kind": "manual"}}]}'
+    )
+    # cron.jobs binds JOBS_FILE at module-load time, so HERMES_HOME alone isn't
+    # sufficient to redirect job storage. Match the existing test_jobs.py pattern.
+    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    (tmp_path / "workflows").mkdir()
+    p = tmp_path / "workflows" / "demo.yaml"
+    p.write_text(
+        "name: demo\n"
+        "trigger: { manual: true }\n"
+        "steps:\n"
+        "  - { id: a, package: p1 }\n"
+    )
+    from cron.workflow_loader import validate_workflow
+    result = validate_workflow(p)
+    assert result["topo_order"] == ["a"]
+    assert result["name"] == "demo"

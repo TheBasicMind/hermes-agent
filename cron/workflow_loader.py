@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 import yaml
 
 from hermes_constants import get_hermes_home
+from cron.workflow_dag import validate_dag
 
 
 def workflows_dir() -> Path:
@@ -83,3 +84,15 @@ def validate_schema(data: Dict[str, Any]) -> None:
         np = s.get("needs_policy", "all_success")
         if np not in _NEEDS_POLICIES:
             raise ValueError(f"steps[{sid}].needs_policy must be one of {_NEEDS_POLICIES}")
+
+
+def _available_package_ids() -> set:
+    from cron.jobs import list_jobs
+    return {j["id"] for j in list_jobs()}
+
+
+def validate_workflow(path: Path) -> Dict[str, Any]:
+    data = load_workflow_file(path)
+    validate_schema(data)
+    order = validate_dag(data, _available_package_ids())
+    return {**data, "topo_order": order, "_path": str(path)}
