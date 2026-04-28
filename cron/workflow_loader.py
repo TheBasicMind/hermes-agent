@@ -1,7 +1,7 @@
-"""Discovery and raw parsing of workflow YAML files.
+"""Discovery, raw parsing, and structural schema validation of workflow YAMLs.
 
-Loaded shape is intentionally a plain dict — structural validation lives in
-`workflow_dag` to keep parse and validate concerns separate.
+Graph and reference checks (cycle detection, package-ID resolution, group
+existence) live in `workflow_dag` to keep DAG concerns separate.
 """
 from __future__ import annotations
 from pathlib import Path
