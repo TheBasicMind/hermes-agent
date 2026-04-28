@@ -60,16 +60,18 @@ def init_db() -> None:
         c.executescript(_SCHEMA)
 
 
+_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "skipped", "cancelled"})
+
+
 @contextmanager
 def _cursor():
     init_db()
-    with _connect() as c:
-        try:
+    c = _connect()
+    try:
+        with c:
             yield c
-            c.commit()
-        except Exception:
-            c.rollback()
-            raise
+    finally:
+        c.close()
 
 
 def create_run(run_id: str, workflow_name: str, *, triggered_by: str,
@@ -125,10 +127,10 @@ def create_step(run_id: str, step_id: str, *, snapshot: Dict[str, Any],
 def update_step(run_id: str, step_id: str, **fields: Any) -> None:
     if not fields:
         return
-    if "status" in fields and fields["status"] in ("running",) and "started_at" not in fields:
+    status = fields.get("status")
+    if status == "running" and "started_at" not in fields:
         fields["started_at"] = _hermes_now().isoformat()
-    if "status" in fields and fields["status"] in ("succeeded", "failed", "skipped", "cancelled") \
-            and "finished_at" not in fields:
+    if status in _TERMINAL_STATUSES and "finished_at" not in fields:
         fields["finished_at"] = _hermes_now().isoformat()
     cols = ", ".join(f"{k} = ?" for k in fields)
     with _cursor() as c:
