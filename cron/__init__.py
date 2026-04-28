@@ -27,10 +27,16 @@ from cron.jobs import (
     JOBS_FILE,
 )
 from cron.scheduler import tick
+from cron.workflow_loader import (
+    list_workflow_files,
+    load_workflow_file,
+    validate_schema,
+    validate_workflow,
+)
 
 __all__ = [
     "create_job",
-    "get_job", 
+    "get_job",
     "list_jobs",
     "remove_job",
     "update_job",
@@ -39,4 +45,8 @@ __all__ = [
     "trigger_job",
     "tick",
     "JOBS_FILE",
+    "list_workflow_files",
+    "load_workflow_file",
+    "validate_schema",
+    "validate_workflow",
 ]
