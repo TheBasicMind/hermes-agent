@@ -1666,6 +1666,62 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
+def run_job_in_subprocess(
+    job: dict,
+    *,
+    env_overrides: Optional[dict] = None,
+) -> dict:
+    """Execute a cron job via the worker and return a subprocess-shaped result.
+
+    This is the worker-invocation primitive used by the workflow dispatcher
+    (and any other caller that wants the worker's behaviour without coupling
+    to ``tick()``'s delivery / advance / mark_run pipeline).
+
+    The current Hermes worker (:func:`run_job`) runs the agent in-process
+    rather than spawning ``hermes-agent`` as a subprocess.  We preserve the
+    subprocess-style return contract so callers (e.g. the workflow
+    dispatcher) can be written against a single shape:
+
+        {"exit_code": int, "stdout": str, "stderr": str | None}
+
+    - ``stdout``  -> the agent's ``final_response`` (what would be delivered)
+    - ``stderr``  -> the worker's error message on failure, else ``None``
+    - ``exit_code`` -> 0 on success, 1 on failure
+
+    Args:
+        job: Cron-job dict, same shape ``run_job`` accepts.
+        env_overrides: Extra env vars to layer on top of ``os.environ`` for the
+            duration of this call.  Used by the workflow dispatcher to inject
+            ``HERMES_WORKFLOW_RUN_ID`` and ``HERMES_WORKFLOW_NEEDS_FILE``.
+            ``None`` (the default) leaves the environment untouched.
+
+    Returns:
+        ``{"exit_code", "stdout", "stderr"}`` — see contract above.
+    """
+    overrides = env_overrides or {}
+    # Snapshot only the keys we touch so we can restore them precisely
+    # (preserving "was unset" vs "was set to ''").
+    _saved: dict[str, Optional[str]] = {
+        key: os.environ.get(key) for key in overrides
+    }
+    try:
+        for key, value in overrides.items():
+            os.environ[str(key)] = str(value)
+        success, _output, final_response, error = run_job(job)
+    finally:
+        for key, prior in _saved.items():
+            if prior is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prior
+
+    return {
+        "exit_code": 0 if success else 1,
+        "stdout": final_response or "",
+        "stderr": None if success else error,
+    }
+
+
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     """
     Check and run all due jobs.

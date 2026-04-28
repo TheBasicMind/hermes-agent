@@ -2386,3 +2386,82 @@ class TestSendMediaTimeoutCancelsFuture:
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == "/tmp/fast.mp4"
+
+
+class TestRunJobInSubprocess:
+    """Contract tests for run_job_in_subprocess (worker invocation primitive).
+
+    The function wraps the in-process worker (run_job) and surfaces a
+    subprocess-style return shape so callers like the workflow dispatcher
+    can use one shape regardless of how the worker is implemented.
+    """
+
+    def test_success_shape_and_env_override_visible_to_worker(self, monkeypatch):
+        """Success path: env_overrides are visible inside run_job and restored after."""
+        from cron import scheduler as sched
+
+        # Pre-existing env state we expect to be left untouched/restored.
+        monkeypatch.setenv("HERMES_WORKFLOW_RUN_ID", "PREEXISTING")
+        monkeypatch.delenv("HERMES_WORKFLOW_NEEDS_FILE", raising=False)
+
+        seen = {}
+
+        def fake_run_job(job):
+            seen["env_run_id"] = os.environ.get("HERMES_WORKFLOW_RUN_ID")
+            seen["env_needs_file"] = os.environ.get("HERMES_WORKFLOW_NEEDS_FILE")
+            seen["job_id"] = job.get("id")
+            return True, "audit-output-doc", "the agent answer", None
+
+        monkeypatch.setattr(sched, "run_job", fake_run_job)
+
+        out = sched.run_job_in_subprocess(
+            {"id": "wf.step", "name": "wf/step", "prompt": "hi"},
+            env_overrides={
+                "HERMES_WORKFLOW_RUN_ID": "RID-123",
+                "HERMES_WORKFLOW_NEEDS_FILE": "/tmp/needs.json",
+            },
+        )
+
+        # Contract: the returned dict has the expected keys/types.
+        assert out["exit_code"] == 0
+        assert out["stdout"] == "the agent answer"
+        assert out["stderr"] is None
+
+        # Worker saw the overrides.
+        assert seen["env_run_id"] == "RID-123"
+        assert seen["env_needs_file"] == "/tmp/needs.json"
+        assert seen["job_id"] == "wf.step"
+
+        # Pre-existing env restored / previously-unset key is gone again.
+        assert os.environ.get("HERMES_WORKFLOW_RUN_ID") == "PREEXISTING"
+        assert "HERMES_WORKFLOW_NEEDS_FILE" not in os.environ
+
+    def test_failure_shape_surfaces_error_as_stderr(self, monkeypatch):
+        from cron import scheduler as sched
+
+        def fake_run_job(job):
+            return False, "audit-output-doc", "", "TimeoutError: idle"
+
+        monkeypatch.setattr(sched, "run_job", fake_run_job)
+
+        out = sched.run_job_in_subprocess(
+            {"id": "j", "name": "j", "prompt": ""},
+        )
+        assert out["exit_code"] == 1
+        assert out["stdout"] == ""
+        assert out["stderr"] == "TimeoutError: idle"
+
+    def test_no_env_overrides_leaves_environ_unchanged(self, monkeypatch):
+        from cron import scheduler as sched
+
+        def fake_run_job(job):
+            return True, "doc", "ok", None
+
+        monkeypatch.setattr(sched, "run_job", fake_run_job)
+
+        before = dict(os.environ)
+        out = sched.run_job_in_subprocess({"id": "j", "name": "j", "prompt": ""})
+        after = dict(os.environ)
+
+        assert out == {"exit_code": 0, "stdout": "ok", "stderr": None}
+        assert before == after
