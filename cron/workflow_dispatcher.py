@@ -8,13 +8,16 @@ The dispatcher composes:
 then invokes the worker and records the outcome on the step row, finally
 calling advance + finalize so dependents become ready (or the run terminates).
 
-`_run_worker` is provisional — Task C3 wires it to the real cron worker.
+``_run_worker`` is a thin adapter over :func:`cron.scheduler.run_job_in_subprocess`
+— the dispatcher hands it the job snapshot plus a pre-built env, and the
+adapter forwards only the workflow-specific overrides into the worker.
 """
 from __future__ import annotations
 import json
 import os
 from typing import Any, Dict, List, Optional
 
+from cron.scheduler import run_job_in_subprocess
 from cron.workflow_context import render_preamble, write_needs_file
 from cron.workflow_runtime import advance, finalize_run_if_done
 from cron.workflow_storage import get_run, get_step, update_step
@@ -42,8 +45,18 @@ def _direct_parent_results(run_id: str, step_id: str,
 
 def _run_worker(job: Dict[str, Any], *,
                 env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    """Provisional adapter — Task C3 wires this to the real cron worker."""
-    raise NotImplementedError("worker bridge not yet wired")
+    """Adapter to the real cron worker.
+
+    ``env`` arrives from :func:`dispatch_step` as a *full* ``os.environ``
+    copy plus the workflow-specific vars; the worker already inherits
+    ``os.environ`` itself, so we forward only the workflow-scoped overrides
+    to avoid clobbering unrelated env state.
+    """
+    overrides = {
+        k: v for k, v in (env or {}).items()
+        if k.startswith("HERMES_WORKFLOW_")
+    }
+    return run_job_in_subprocess(job, env_overrides=overrides)
 
 
 def dispatch_step(run_id: str, step_id: str) -> None:
