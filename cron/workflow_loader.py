@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 import yaml
 
 from hermes_constants import get_hermes_home
+from cron.jobs import list_jobs
 from cron.workflow_dag import validate_dag
 
 
@@ -87,11 +88,18 @@ def validate_schema(data: Dict[str, Any]) -> None:
 
 
 def _available_package_ids() -> set:
-    from cron.jobs import list_jobs
     return {j["id"] for j in list_jobs()}
 
 
 def validate_workflow(path: Path) -> Dict[str, Any]:
+    """Load + schema-validate + DAG-validate a workflow YAML.
+
+    Returns the parsed workflow dict spread into the result, plus two
+    metadata keys: `topo_order` (deterministic step execution order) and
+    `_path` (absolute source path). Metadata keys are prefixed for the
+    benefit of callers who serialize to JSON — strip the underscore-prefixed
+    and `topo_order` keys before forwarding to external clients.
+    """
     data = load_workflow_file(path)
     validate_schema(data)
     order = validate_dag(data, _available_package_ids())
