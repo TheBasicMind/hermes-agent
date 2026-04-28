@@ -91,3 +91,23 @@ def test_validate_workflow_end_to_end(tmp_path, monkeypatch):
     result = validate_workflow(p)
     assert result["topo_order"] == ["a"]
     assert result["name"] == "demo"
+
+
+def test_validate_workflow_rejects_unknown_package(tmp_path, monkeypatch):
+    """Proves validate_workflow actually wires available_packages through to validate_dag."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "cron").mkdir()
+    (tmp_path / "cron" / "jobs.json").write_text('{"jobs": []}')
+    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    (tmp_path / "workflows").mkdir()
+    p = tmp_path / "workflows" / "demo.yaml"
+    p.write_text(
+        "name: demo\n"
+        "trigger: { manual: true }\n"
+        "steps:\n"
+        "  - { id: a, package: ghost }\n"
+    )
+    from cron.workflow_loader import validate_workflow
+    from cron.workflow_dag import WorkflowError
+    with pytest.raises(WorkflowError, match="unknown package 'ghost'"):
+        validate_workflow(p)
