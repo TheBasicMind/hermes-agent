@@ -231,6 +231,7 @@ _LEGACY_TOOLSET_MAP = {
         "browser_vision", "browser_console"
     ],
     "cronjob_tools": ["cronjob"],
+    "workflow_tools": ["workflow"],
     "rl_tools": [
         "rl_list_environments", "rl_select_environment",
         "rl_get_current_config", "rl_edit_config",
