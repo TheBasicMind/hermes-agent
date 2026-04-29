@@ -55,9 +55,23 @@ CREATE INDEX IF NOT EXISTS idx_steps_status ON workflow_steps(run_id, status);
 """
 
 
+_inited_paths: set = set()
+
+
 def init_db() -> None:
-    with _connect() as c:
-        c.executescript(_SCHEMA)
+    # `with sqlite3_conn:` is a *transaction* context manager — it does NOT
+    # close the connection. Close explicitly to avoid leaking a file
+    # descriptor on every storage call.
+    p = _db_path()
+    if p in _inited_paths:
+        return
+    c = _connect()
+    try:
+        with c:
+            c.executescript(_SCHEMA)
+    finally:
+        c.close()
+    _inited_paths.add(p)
 
 
 _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "skipped", "cancelled"})
