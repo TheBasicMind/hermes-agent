@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Dict
 
-from cron.workflow_storage import _connect
+from cron.workflow_storage import _cursor
 
 
 _group_counts: Dict[str, int] = defaultdict(int)
@@ -40,7 +40,9 @@ def release_group_slot(group: str) -> None:
 
 
 def can_start_run(workflow_name: str, *, max_concurrent_runs: int = 1) -> bool:
-    with _connect() as c:
+    # Use _cursor() (which closes the connection) rather than `with _connect()`,
+    # whose context manager only commits the transaction and leaks the fd.
+    with _cursor() as c:
         n = c.execute(
             "SELECT COUNT(*) FROM workflow_runs WHERE workflow_name = ? AND status = 'running'",
             (workflow_name,),

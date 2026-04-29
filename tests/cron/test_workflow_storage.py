@@ -1,9 +1,11 @@
+import gc
 import json
 import sqlite3
 import pytest
 from cron.workflow_storage import (
     init_db, create_run, get_run, list_runs, update_run,
     create_step, update_step, get_step, list_steps_for_run,
+    _cursor,
 )
 
 
@@ -79,3 +81,31 @@ def test_create_step_rejects_unknown_run_via_foreign_key(tmp_path, monkeypatch):
     init_db()
     with pytest.raises(sqlite3.IntegrityError):
         create_step("ghost_run", "a", snapshot={})
+
+
+def test_storage_does_not_leak_sqlite_connections(tmp_path, monkeypatch):
+    """Regression: previously `init_db()` used `with sqlite3_conn:` which is
+    a *transaction* context manager — it does NOT close the connection.
+    Repeated storage operations therefore leaked one fd per call until gc
+    reclaimed the connection, exhausting the gateway's fd table under load."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from cron.workflow_storage import _inited_paths
+    _inited_paths.clear()
+
+    def _do_work():
+        init_db()
+        with _cursor() as c:
+            c.execute("SELECT 1").fetchone()
+
+    gc.collect()
+    baseline = sum(1 for o in gc.get_objects() if isinstance(o, sqlite3.Connection))
+
+    for _ in range(50):
+        _do_work()
+
+    gc.collect()
+    final = sum(1 for o in gc.get_objects() if isinstance(o, sqlite3.Connection))
+    assert final == baseline, (
+        f"sqlite connections leaked: baseline={baseline} final={final} "
+        f"(delta={final - baseline})"
+    )
