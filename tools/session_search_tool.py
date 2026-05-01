@@ -263,6 +263,25 @@ async def _summarize_session(
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
 
+def _is_db_malformed_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "database disk image is malformed" in msg or "malformed" in msg
+
+
+def _fresh_session_db_from_existing(db):
+    """Best-effort: reopen SessionDB from the same db path to bypass stale/corrupt handles."""
+    try:
+        from pathlib import Path
+        from hermes_state import SessionDB
+
+        db_path = getattr(db, "db_path", None)
+        if not db_path:
+            return None
+        return SessionDB(Path(str(db_path)))
+    except Exception:
+        return None
+
+
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls)."""
     try:
@@ -316,6 +335,14 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             "message": f"Showing {len(results)} most recent sessions. Use a keyword query to search specific topics.",
         }, ensure_ascii=False)
     except Exception as e:
+        if _is_db_malformed_error(e):
+            fresh_db = _fresh_session_db_from_existing(db)
+            if fresh_db is not None:
+                try:
+                    return _list_recent_sessions(fresh_db, limit, current_session_id)
+                except Exception as retry_e:
+                    logging.error("Retry after DB reopen failed while listing sessions: %s", retry_e, exc_info=True)
+                    return tool_error(f"Failed to list recent sessions after DB reopen: {retry_e}", success=False)
         logging.error("Error listing recent sessions: %s", e, exc_info=True)
         return tool_error(f"Failed to list recent sessions: {e}", success=False)
 
@@ -517,6 +544,20 @@ def session_search(
         }, ensure_ascii=False)
 
     except Exception as e:
+        if _is_db_malformed_error(e):
+            fresh_db = _fresh_session_db_from_existing(db)
+            if fresh_db is not None and fresh_db is not db:
+                try:
+                    return session_search(
+                        query=query,
+                        role_filter=role_filter,
+                        limit=limit,
+                        db=fresh_db,
+                        current_session_id=current_session_id,
+                    )
+                except Exception as retry_e:
+                    logging.error("Session search retry after DB reopen failed: %s", retry_e, exc_info=True)
+                    return tool_error(f"Search failed after DB reopen: {str(retry_e)}", success=False)
         logging.error("Session search failed: %s", e, exc_info=True)
         return tool_error(f"Search failed: {str(e)}", success=False)
 
