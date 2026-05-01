@@ -1739,7 +1739,32 @@ def _tick_workflows(now):
     )
     from cron.workflow_dispatcher import dispatch_step
     from cron.workflow_concurrency import can_start_run
-    from cron.workflow_storage import list_runs, list_steps_for_run
+    from cron.workflow_storage import list_runs, list_steps_for_run, update_step
+
+    # Default stuck-step timeout. Steps in 'running' status whose ``started_at``
+    # is older than this without a status update are assumed dead (worker process
+    # crashed, gateway restarted mid-step, CLI driver hit a client-side timeout
+    # and aborted dispatch_step before it could write back, etc.) and marked
+    # 'failed' so the run can advance.  Per-step override via the workflow YAML's
+    # ``timeout_minutes`` field (in the step entry) is honoured when set.
+    _DEFAULT_STUCK_TIMEOUT_MIN = 60
+
+    def _stuck_timeout_for_step(wf_def, step_id):
+        for s in wf_def.get("steps", []) or []:
+            if s.get("id") == step_id:
+                tm = s.get("timeout_minutes")
+                if isinstance(tm, (int, float)) and tm > 0:
+                    return timedelta(minutes=float(tm))
+                return timedelta(minutes=_DEFAULT_STUCK_TIMEOUT_MIN)
+        return timedelta(minutes=_DEFAULT_STUCK_TIMEOUT_MIN)
+
+    def _parse_started_at(value):
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value))
+        except Exception:
+            return None
 
     paths = list_workflow_files()
     for path in paths:
@@ -1748,6 +1773,43 @@ def _tick_workflows(now):
         except Exception as exc:
             logger.warning("workflow %s invalid: %s", path.name, exc)
             continue
+
+        # 0) Sweep stuck 'running' steps before advancing.  A step left in
+        #    'running' past its timeout has no live worker (Hermes' worker
+        #    is in-process; we can't detect it externally), so the timestamp
+        #    age is the canonical liveness signal.  Mark it failed so the
+        #    run's needs_policy + advance logic can move forward.
+        for r in list_runs(wf["name"]):
+            if r["status"] != "running":
+                continue
+            for step in list_steps_for_run(r["run_id"]):
+                if step.get("status") != "running":
+                    continue
+                started = _parse_started_at(step.get("started_at"))
+                if started is None:
+                    continue
+                # Compare in the same tz-awareness as ``now``.  ``_hermes_now()``
+                # returns aware; DB stores aware ISO timestamps.
+                try:
+                    age = now - started
+                except TypeError:
+                    # Fallback: strip tz from both sides.
+                    age = now.replace(tzinfo=None) - started.replace(tzinfo=None)
+                limit = _stuck_timeout_for_step(wf, step["step_id"])
+                if age > limit:
+                    err = (
+                        f"step exceeded {int(limit.total_seconds() // 60)}min "
+                        f"timeout (no liveness signal; worker likely died "
+                        f"mid-execution). Marked failed by cron-tick sweep."
+                    )
+                    logger.warning(
+                        "workflow %s run %s step %s: %s",
+                        wf["name"], r["run_id"], step["step_id"], err,
+                    )
+                    update_step(
+                        r["run_id"], step["step_id"],
+                        status="failed", last_error=err,
+                    )
 
         # 1) Advance in-flight runs of this workflow.
         for r in list_runs(wf["name"]):

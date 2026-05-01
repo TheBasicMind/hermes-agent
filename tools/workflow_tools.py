@@ -58,10 +58,20 @@ def workflow(*, verb: str, name: Optional[str] = None,
             raise ValueError("verb='run' requires name")
         wf = validate_workflow(_find_path(name))
         rid = start_run(wf, triggered_by="manual")
-        for s in list_steps_for_run(rid):
-            if s["status"] == "ready":
-                dispatch_step(rid, s["step_id"])
-        return {"run_id": rid}
+        # Non-blocking: do NOT dispatch the first ready step here.
+        # The gateway's cron-tick (_tick_workflows) picks up ready steps
+        # within ~60s.  Synchronous dispatch made this CLI verb block for
+        # the entire duration of phase_1 (often 5–15 minutes), which left
+        # runs stuck in 'running' whenever the calling agent / shell hit a
+        # client-side timeout and aborted mid-dispatch.
+        ready = [s["step_id"] for s in list_steps_for_run(rid) if s["status"] == "ready"]
+        return {
+            "run_id": rid,
+            "status": "queued",
+            "ready_steps": ready,
+            "note": "Steps will dispatch on the next gateway cron tick (≤60s). "
+                    "Use verb='status' to poll progress; verb='cancel' to abort.",
+        }
 
     if verb == "status":
         if not run_id:
