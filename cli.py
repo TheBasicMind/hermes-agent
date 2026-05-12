@@ -13881,6 +13881,7 @@ def main(
     image: str = None,
     toolsets: str = None,
     skills: str | list[str] | tuple[str, ...] = None,
+    skill_catalog: str = None,
     model: str = None,
     provider: str = None,
     api_key: str = None,
@@ -13909,6 +13910,7 @@ def main(
         image: Optional local image path to attach to a single query
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         skills: Comma-separated or repeated list of skills to preload for the session
+        skill_catalog: Session-only startup catalog override: none|minimal|full
         model: Model to use (default: anthropic/claude-opus-4-20250514)
         provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
         api_key: API key for authentication
@@ -14002,6 +14004,12 @@ def main(
         from hermes_cli.tools_config import _get_platform_tools
         toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
     
+    if skill_catalog:
+        normalized_skill_catalog = str(skill_catalog).strip().lower()
+        if normalized_skill_catalog not in {"none", "minimal", "full"}:
+            raise ValueError("--skill-catalog must be one of: none, minimal, full")
+        os.environ["HERMES_SKILL_CATALOG"] = normalized_skill_catalog
+
     parsed_skills = _parse_skills_argument(skills)
 
     # Create CLI instance

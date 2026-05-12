@@ -1446,6 +1446,7 @@ def cmd_chat(args):
         "provider": getattr(args, "provider", None),
         "toolsets": args.toolsets,
         "skills": getattr(args, "skills", None),
+        "skill_catalog": ("none" if getattr(args, "no_skill_catalog", False) else getattr(args, "skill_catalog", None)),
         "verbose": args.verbose,
         "quiet": getattr(args, "quiet", False),
         "query": args.query,

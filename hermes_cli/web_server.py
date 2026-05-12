@@ -2887,6 +2887,59 @@ async def toggle_skill(body: SkillToggle):
     return {"ok": True, "name": body.name, "enabled": body.enabled}
 
 
+@app.get("/api/skills/preload")
+async def get_skill_preload():
+    from tools.skills_tool import _find_all_skills
+    from hermes_cli.skills_config import get_disabled_skills, get_preload_enabled_skills
+
+    config = load_config()
+    disabled = get_disabled_skills(config)
+    preload_enabled = get_preload_enabled_skills(config)
+    skills = [s for s in _find_all_skills(skip_disabled=True) if s["name"] not in disabled]
+    for s in skills:
+        s["available"] = True
+        s["enabled"] = True
+        inject_frontmatter = True if preload_enabled is None else s["name"] in preload_enabled
+        # This endpoint controls startup-prompt frontmatter/catalog injection only.
+        # It must not affect skill loadability via skills_list/skill_view/skill_manage.
+        s["inject_frontmatter"] = inject_frontmatter
+        s["preload"] = inject_frontmatter  # Backwards-compatible UI field name.
+    return skills
+
+
+@app.put("/api/skills/preload/toggle")
+async def toggle_skill_preload(body: SkillToggle):
+    from tools.skills_tool import _find_all_skills
+    from hermes_cli.skills_config import (
+        get_disabled_skills,
+        get_preload_enabled_skills,
+        save_preload_enabled_skills,
+    )
+
+    config = load_config()
+    disabled = get_disabled_skills(config)
+    all_skills = _find_all_skills(skip_disabled=True)
+    enabled_names = {s["name"] for s in all_skills if s["name"] not in disabled}
+    if body.name not in enabled_names:
+        raise HTTPException(status_code=400, detail="Skill is disabled or not found")
+
+    preload_enabled = get_preload_enabled_skills(config)
+    if preload_enabled is None:
+        preload_enabled = set(enabled_names)
+    if body.enabled:
+        preload_enabled.add(body.name)
+    else:
+        preload_enabled.discard(body.name)
+    save_preload_enabled_skills(config, preload_enabled)
+    return {
+        "ok": True,
+        "name": body.name,
+        "inject_frontmatter": body.enabled,
+        "preload": body.enabled,
+        "enabled": True,
+    }
+
+
 @app.get("/api/tools/toolsets")
 async def get_toolsets():
     from hermes_cli.tools_config import (

@@ -184,6 +184,20 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
+        "--skill-catalog",
+        choices=["none", "minimal", "full"],
+        default=None,
+        help="Override startup skill catalog detail for this session only",
+    )
+    _inherited_flag(
+        parser,
+        "--no-skill-catalog",
+        action="store_true",
+        default=False,
+        help="Do not inject the startup <available_skills> catalog for this session",
+    )
+    _inherited_flag(
+        parser,
         "--yolo",
         action="store_true",
         default=False,
@@ -256,6 +270,20 @@ def build_top_level_parser():
         action="append",
         default=argparse.SUPPRESS,
         help="Preload one or more skills for the session (repeat flag or comma-separate)",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--skill-catalog",
+        choices=["none", "minimal", "full"],
+        default=argparse.SUPPRESS,
+        help="Override startup skill catalog detail for this session only",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--no-skill-catalog",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Do not inject the startup <available_skills> catalog for this session",
     )
     _inherited_flag(
         chat_parser,

@@ -452,8 +452,12 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     Also works for external skill dirs configured via skills.external_dirs.
     """
     # Try the module-level SKILLS_DIR first (respects monkeypatching in tests),
+    # then the current profile's live HERMES_HOME (env may change after import),
     # then fall back to external dirs from config.
+    live_skills_dir = get_hermes_home() / "skills"
     dirs_to_check = [SKILLS_DIR]
+    if live_skills_dir != SKILLS_DIR:
+        dirs_to_check.append(live_skills_dir)
     try:
         from agent.skill_utils import get_external_skills_dirs
         dirs_to_check.extend(get_external_skills_dirs())
@@ -566,10 +570,14 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-    # Scan local dir first, then external dirs (local takes precedence)
+    # Scan local dir first, then external dirs (local takes precedence).
+    # Include the live HERMES_HOME path because tests and profile-scoped runs may
+    # change HERMES_HOME after this module was imported.
     dirs_to_scan = []
-    if SKILLS_DIR.exists():
-        dirs_to_scan.append(SKILLS_DIR)
+    live_skills_dir = get_hermes_home() / "skills"
+    for candidate in (SKILLS_DIR, live_skills_dir):
+        if candidate.exists() and candidate not in dirs_to_scan:
+            dirs_to_scan.append(candidate)
     dirs_to_scan.extend(get_external_skills_dirs())
 
     for scan_dir in dirs_to_scan:

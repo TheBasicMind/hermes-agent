@@ -1232,6 +1232,16 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Startup skill catalog / frontmatter prompt injection. These controls
+        # affect only the system-prompt catalog/preload block; enabled skills
+        # remain available through skills_list, skill_view, and skill_manage.
+        "inject_catalog": True,
+        "catalog_detail": "full",  # none|minimal|full
+        "max_catalog_entries": None,
+        "catalog_filter_tags": [],
+        # Optional allow-list for skills injected into the startup catalog.
+        # Missing/None preserves legacy behaviour: all enabled skills preload.
+        "preload_enabled_skills": None,
     },
 
     # Curator — background skill maintenance.

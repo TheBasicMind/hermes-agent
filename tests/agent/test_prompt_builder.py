@@ -1118,6 +1118,83 @@ class TestBuildSkillsSystemPromptConditional:
         )
         assert "nested-null" in result
 
+    def test_catalog_detail_none_hides_available_skills_block(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  inject_catalog: true\n  catalog_detail: none\n"
+        )
+        skill_dir = tmp_path / "skills" / "general" / "hidden-catalog"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: hidden-catalog\ndescription: Available but not catalogued\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert result == ""
+
+    def test_catalog_detail_minimal_omits_descriptions(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  inject_catalog: true\n  catalog_detail: minimal\n"
+        )
+        skill_dir = tmp_path / "skills" / "general" / "minimal-catalog"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: minimal-catalog\ndescription: Should not appear\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "minimal-catalog" in result
+        assert "Should not appear" not in result
+        assert "<available_skills>" in result
+
+    def test_preload_allowlist_hides_only_catalog_entry(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  preload_enabled_skills: [preload-on]\n"
+        )
+        for name in ["preload-on", "preload-off"]:
+            skill_dir = tmp_path / "skills" / "general" / name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {name} desc\n---\n"
+            )
+
+        result = build_skills_system_prompt()
+
+        assert "preload-on" in result
+        assert "preload-off" not in result
+
+    def test_catalog_none_does_not_disable_skill_tool_discovery(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  inject_catalog: true\n  catalog_detail: none\n"
+        )
+        skill_dir = tmp_path / "skills" / "general" / "tool-visible"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: tool-visible\ndescription: Tool visible\n---\nBody\n"
+        )
+
+        assert build_skills_system_prompt() == ""
+        from tools.skills_tool import _find_all_skills
+
+        discovered = _find_all_skills(skip_disabled=False)
+        assert any(skill["name"] == "tool-visible" for skill in discovered)
+
+    def test_cli_skill_catalog_env_override_hides_catalog(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_SKILL_CATALOG", "none")
+        skill_dir = tmp_path / "skills" / "general" / "env-hidden"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: env-hidden\ndescription: Env hidden\n---\n"
+        )
+
+        assert build_skills_system_prompt() == ""
+
 
 # =========================================================================
 # Tool-use enforcement guidance

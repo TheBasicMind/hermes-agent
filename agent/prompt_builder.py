@@ -833,7 +833,7 @@ CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-_SKILLS_SNAPSHOT_VERSION = 1
+_SKILLS_SNAPSHOT_VERSION = 2
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -928,6 +928,7 @@ def _build_snapshot_entry(
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "tags": _skill_tags(frontmatter),
     }
 
 
@@ -985,6 +986,79 @@ def _skill_should_show(
     return True
 
 
+def _skill_tags(frontmatter: dict) -> list[str]:
+    """Extract normalized tag strings from known skill frontmatter locations."""
+    tags = frontmatter.get("tags") or []
+    metadata = frontmatter.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    hermes_meta = metadata.get("hermes") or {}
+    if not isinstance(hermes_meta, dict):
+        hermes_meta = {}
+    tags = list(tags if isinstance(tags, list) else [tags])
+    meta_tags = hermes_meta.get("tags") or []
+    tags.extend(meta_tags if isinstance(meta_tags, list) else [meta_tags])
+    return sorted({str(tag).strip() for tag in tags if str(tag).strip()})
+
+
+def _load_skill_catalog_config() -> tuple[bool, str, int | None, set[str], set[str] | None]:
+    """Return startup catalog controls from config plus CLI env overrides."""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.skills_config import get_preload_enabled_skills
+
+        config = load_config()
+    except Exception:
+        config = {}
+    skills_cfg = config.get("skills", {}) if isinstance(config, dict) else {}
+
+    inject_catalog = bool(skills_cfg.get("inject_catalog", True))
+    detail = str(skills_cfg.get("catalog_detail", "full") or "full").strip().lower()
+    override = os.environ.get("HERMES_SKILL_CATALOG")
+    if override:
+        detail = override.strip().lower()
+        inject_catalog = detail != "none"
+    if detail not in {"none", "minimal", "full"}:
+        detail = "full"
+    if not inject_catalog:
+        detail = "none"
+
+    raw_cap = skills_cfg.get("max_catalog_entries")
+    try:
+        max_entries = int(raw_cap) if raw_cap is not None else None
+        if max_entries is not None and max_entries < 0:
+            max_entries = None
+    except (TypeError, ValueError):
+        max_entries = None
+
+    raw_tags = skills_cfg.get("catalog_filter_tags") or []
+    if isinstance(raw_tags, str):
+        raw_tags = [raw_tags]
+    filter_tags = {str(tag).strip() for tag in raw_tags if str(tag).strip()}
+
+    try:
+        preload_enabled = get_preload_enabled_skills(config)
+    except Exception:
+        preload_enabled = None
+
+    return inject_catalog, detail, max_entries, filter_tags, preload_enabled
+
+
+def _catalog_entry_allowed(
+    frontmatter_name: str,
+    skill_name: str,
+    tags: list[str],
+    filter_tags: set[str],
+    preload_enabled: set[str] | None,
+) -> bool:
+    """Return True if this enabled skill should be injected in startup catalog."""
+    if preload_enabled is not None and (frontmatter_name not in preload_enabled and skill_name not in preload_enabled):
+        return False
+    if filter_tags and not (set(tags) & filter_tags):
+        return False
+    return True
+
+
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
@@ -1003,6 +1077,10 @@ def build_skills_system_prompt(
     are read-only — they appear in the index but new skills are always created
     in the local dir.  Local skills take precedence when names collide.
     """
+    inject_catalog, catalog_detail, max_catalog_entries, filter_tags, preload_enabled = _load_skill_catalog_config()
+    if not inject_catalog or catalog_detail == "none":
+        return ""
+
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
 
@@ -1026,6 +1104,10 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        catalog_detail,
+        max_catalog_entries,
+        tuple(sorted(filter_tags)),
+        None if preload_enabled is None else tuple(sorted(preload_enabled)),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1036,7 +1118,7 @@ def build_skills_system_prompt(
     # ── Layer 2: disk snapshot ────────────────────────────────────────
     snapshot = _load_skills_snapshot(skills_dir)
 
-    skills_by_category: dict[str, list[tuple[str, str]]] = {}
+    skills_by_category: dict[str, list[tuple[str, str, str]]] = {}
     category_descriptions: dict[str, str] = {}
 
     if snapshot is not None:
@@ -1058,8 +1140,16 @@ def build_skills_system_prompt(
                 available_toolsets,
             ):
                 continue
+            if not _catalog_entry_allowed(
+                frontmatter_name,
+                skill_name,
+                entry.get("tags") or [],
+                filter_tags,
+                preload_enabled,
+            ):
+                continue
             skills_by_category.setdefault(category, []).append(
-                (frontmatter_name, entry.get("description", ""))
+                (frontmatter_name, entry.get("description", ""), skill_name)
             )
         category_descriptions = {
             str(k): str(v)
@@ -1083,8 +1173,16 @@ def build_skills_system_prompt(
                 available_toolsets,
             ):
                 continue
+            if not _catalog_entry_allowed(
+                entry["frontmatter_name"],
+                skill_name,
+                entry.get("tags") or [],
+                filter_tags,
+                preload_enabled,
+            ):
+                continue
             skills_by_category.setdefault(entry["category"], []).append(
-                (entry["frontmatter_name"], entry["description"])
+                (entry["frontmatter_name"], entry["description"], skill_name)
             )
 
         # Read category-level DESCRIPTION.md files
@@ -1114,7 +1212,7 @@ def build_skills_system_prompt(
     # precedence: we track seen names and skip duplicates from external dirs.
     seen_skill_names: set[str] = set()
     for cat_skills in skills_by_category.values():
-        for name, _desc in cat_skills:
+        for name, _desc, _skill_name in cat_skills:
             seen_skill_names.add(name)
 
     for ext_dir in external_dirs:
@@ -1138,9 +1236,17 @@ def build_skills_system_prompt(
                     available_toolsets,
                 ):
                     continue
+                if not _catalog_entry_allowed(
+                    frontmatter_name,
+                    skill_name,
+                    entry.get("tags") or [],
+                    filter_tags,
+                    preload_enabled,
+                ):
+                    continue
                 seen_skill_names.add(frontmatter_name)
                 skills_by_category.setdefault(entry["category"], []).append(
-                    (frontmatter_name, entry["description"])
+                    (frontmatter_name, entry["description"], skill_name)
                 )
             except Exception as e:
                 logger.debug("Error reading external skill %s: %s", skill_file, e)
@@ -1163,22 +1269,32 @@ def build_skills_system_prompt(
         result = ""
     else:
         index_lines = []
+        emitted_entries = 0
         for category in sorted(skills_by_category.keys()):
+            if max_catalog_entries is not None and emitted_entries >= max_catalog_entries:
+                break
+            category_lines = []
+            # Deduplicate and sort skills within each category
+            seen = set()
+            for name, desc, _skill_name in sorted(skills_by_category[category], key=lambda x: x[0]):
+                if name in seen:
+                    continue
+                if max_catalog_entries is not None and emitted_entries >= max_catalog_entries:
+                    break
+                seen.add(name)
+                emitted_entries += 1
+                if catalog_detail == "full" and desc:
+                    category_lines.append(f"    - {name}: {desc}")
+                else:
+                    category_lines.append(f"    - {name}")
+            if not category_lines:
+                continue
             cat_desc = category_descriptions.get(category, "")
-            if cat_desc:
+            if catalog_detail == "full" and cat_desc:
                 index_lines.append(f"  {category}: {cat_desc}")
             else:
                 index_lines.append(f"  {category}:")
-            # Deduplicate and sort skills within each category
-            seen = set()
-            for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
-                if name in seen:
-                    continue
-                seen.add(name)
-                if desc:
-                    index_lines.append(f"    - {name}: {desc}")
-                else:
-                    index_lines.append(f"    - {name}")
+            index_lines.extend(category_lines)
 
         result = (
             "## Skills (mandatory)\n"
