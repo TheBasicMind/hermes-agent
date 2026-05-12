@@ -47,6 +47,24 @@ def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[st
     save_config(config)
 
 
+def get_preload_enabled_skills(config: dict) -> Optional[Set[str]]:
+    """Return startup-preload allow-list, or None for legacy all-enabled behaviour."""
+    skills_cfg = config.get("skills", {})
+    raw = skills_cfg.get("preload_enabled_skills", None)
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        return set()
+    return {str(name) for name in raw}
+
+
+def save_preload_enabled_skills(config: dict, enabled: Set[str]) -> None:
+    """Persist startup-preload allow-list without changing skill availability."""
+    config.setdefault("skills", {})
+    config["skills"]["preload_enabled_skills"] = sorted(enabled)
+    save_config(config)
+
+
 # ─── Skill Discovery ─────────────────────────────────────────────────────────
 
 def _list_all_skills() -> List[dict]:

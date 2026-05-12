@@ -106,6 +106,27 @@ def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
         cli_mod.main(skills="missing-skill", list_tools=True)
 
 
+def test_main_sets_skill_catalog_session_override(monkeypatch):
+    import cli as cli_mod
+
+    monkeypatch.delenv("HERMES_SKILL_CATALOG", raising=False)
+    monkeypatch.setattr(cli_mod, "HermesCLI", lambda **kwargs: _DummyCLI(**kwargs))
+
+    with pytest.raises(SystemExit):
+        cli_mod.main(skill_catalog="minimal", list_tools=True)
+
+    assert os.environ["HERMES_SKILL_CATALOG"] == "minimal"
+
+
+def test_main_rejects_invalid_skill_catalog_override(monkeypatch):
+    import cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "HermesCLI", lambda **kwargs: _DummyCLI(**kwargs))
+
+    with pytest.raises(ValueError, match="--skill-catalog must be one of"):
+        cli_mod.main(skill_catalog="verbose", list_tools=True)
+
+
 def test_show_banner_does_not_print_skills():
     """show_banner() no longer prints the activated skills line — it moved to run()."""
     cli_obj = _make_real_cli(compact=False)

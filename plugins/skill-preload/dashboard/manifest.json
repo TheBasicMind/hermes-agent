@@ -1,0 +1,13 @@
+{
+  "name": "skill-preload",
+  "label": "Startup Frontmatter",
+  "description": "Control which enabled skills inject frontmatter/catalog entries into new-session prompts without changing tool availability.",
+  "icon": "Package",
+  "version": "0.1.1",
+  "tab": {
+    "path": "/skill-preload",
+    "position": "after:skills"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css"
+}
