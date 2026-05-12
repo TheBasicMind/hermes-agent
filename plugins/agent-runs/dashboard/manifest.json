@@ -1,0 +1,14 @@
+{
+  "name": "agent-runs",
+  "label": "Agent Runs",
+  "description": "Launch and monitor Codex, Claude Code, or generic CLI worker sessions via a side-channel PTY transcript.",
+  "icon": "Terminal",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/agent-runs",
+    "position": "after:sessions"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "api.py"
+}

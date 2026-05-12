@@ -2699,7 +2699,35 @@ async def get_usage_analytics(days: int = 30):
     from hermes_state import SessionDB
     from agent.insights import InsightsEngine
 
-    db = SessionDB()
+    try:
+        db = SessionDB()
+    except Exception as exc:
+        _log.exception("Failed to open session DB for usage analytics")
+        return {
+            "daily": [],
+            "by_model": [],
+            "totals": {
+                "total_input": 0,
+                "total_output": 0,
+                "total_cache_read": 0,
+                "total_reasoning": 0,
+                "total_estimated_cost": 0,
+                "total_actual_cost": 0,
+                "total_sessions": 0,
+                "total_api_calls": 0,
+            },
+            "period_days": days,
+            "skills": {
+                "summary": {
+                    "total_skill_loads": 0,
+                    "total_skill_edits": 0,
+                    "total_skill_actions": 0,
+                    "distinct_skills_used": 0,
+                },
+                "top_skills": [],
+            },
+            "warning": f"Session analytics unavailable: {exc}",
+        }
     try:
         cutoff = time.time() - (days * 86400)
         cur = db._conn.execute("""
@@ -2772,7 +2800,26 @@ async def get_models_analytics(days: int = 30):
     """
     from hermes_state import SessionDB
 
-    db = SessionDB()
+    try:
+        db = SessionDB()
+    except Exception as exc:
+        _log.exception("Failed to open session DB for model analytics")
+        return {
+            "models": [],
+            "totals": {
+                "distinct_models": 0,
+                "total_input": 0,
+                "total_output": 0,
+                "total_cache_read": 0,
+                "total_reasoning": 0,
+                "total_estimated_cost": 0,
+                "total_actual_cost": 0,
+                "total_sessions": 0,
+                "total_api_calls": 0,
+            },
+            "period_days": days,
+            "warning": f"Session analytics unavailable: {exc}",
+        }
     try:
         cutoff = time.time() - (days * 86400)
 

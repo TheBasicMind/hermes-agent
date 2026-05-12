@@ -8944,17 +8944,24 @@ class GatewayRunner:
                 lines = ["📋 **Named Sessions**\n"]
                 for s in titled[:10]:
                     title = s["title"]
+                    sid = s.get("id", "")
                     preview = s.get("preview", "")[:40]
                     preview_part = f" — _{preview}_" if preview else ""
-                    lines.append(f"• **{title}**{preview_part}")
-                lines.append("\nUsage: `/resume <session name>`")
+                    lines.append(f"• **{title}**\n  `{sid}`{preview_part}")
+                lines.append("\nUsage: `/resume <session id or title>`")
                 return "\n".join(lines)
             except Exception as e:
                 logger.debug("Failed to list titled sessions: %s", e)
                 return f"Could not list sessions: {e}"
 
-        # Resolve the name to a session ID.
-        target_id = self._session_db.resolve_session_by_title(name)
+        # Resolve argument to session ID. Accept exact session IDs first,
+        # then fall back to title/lineage resolution.
+        target_id = None
+        if self._session_db.get_session(name):
+            target_id = name
+        else:
+            target_id = self._session_db.resolve_session_by_title(name)
+
         if not target_id:
             return (
                 f"No session found matching '**{name}**'.\n"

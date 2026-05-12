@@ -84,11 +84,14 @@ def _map_single_tweet_payload(action: str, provider: str, raw: Dict[str, Any]) -
 
 
 def _canonicalize_tweet_response(provider: str, action: str, raw: Dict[str, Any]):
-    """Normalize a tweet_get / article_get raw provider response.
+    """Normalize a tweet_get raw provider response.
 
     AISA tweet_detail returns {"code":0, "tweets":[...]}. Official X returns
     {"data": {<tweet>}}. We unwrap either shape and return:
         (canonical_dict, is_empty)
+
+    X article payloads use a different shape ({"article": {...}}) and are
+    intentionally handled by _canonicalize_article_response().
     """
     from agent.integrations.all_x.mappers.aisa_to_x import map_aisa_tweet
 
@@ -124,6 +127,119 @@ def _canonicalize_tweet_response(provider: str, action: str, raw: Dict[str, Any]
 
     # Unknown shape — treat as empty so the caller can decide to fall back / fail.
     return {"provider": provider, "action": action, "data": raw}, True
+
+
+def _shape_summary(value: Any, depth: int = 0, max_depth: int = 3) -> Any:
+    """Return a compact, non-secret summary of a provider response shape."""
+    if depth >= max_depth:
+        return type(value).__name__
+    if isinstance(value, dict):
+        return {str(k): _shape_summary(v, depth + 1, max_depth) for k, v in list(value.items())[:20]}
+    if isinstance(value, list):
+        return {
+            "type": "list",
+            "len": len(value),
+            "first": _shape_summary(value[0], depth + 1, max_depth) if value else None,
+        }
+    if isinstance(value, str):
+        return {"type": "str", "len": len(value), "sample": value[:80]}
+    return {"type": type(value).__name__, "value": value}
+
+
+def _raw_status_code(raw: Any) -> Optional[Any]:
+    """Best-effort status-code/status extraction from API payloads."""
+    if not isinstance(raw, dict):
+        return None
+    for key in ("status_code", "statusCode", "http_status", "code", "status"):
+        if key in raw:
+            return raw.get(key)
+    return None
+
+
+def _article_text_from_contents(contents: Any) -> str:
+    """Extract readable body text from AISA article contents."""
+    parts: List[str] = []
+    if isinstance(contents, list):
+        for item in contents:
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("content") or item.get("value")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+            elif isinstance(item, str) and item.strip():
+                parts.append(item.strip())
+    elif isinstance(contents, str) and contents.strip():
+        parts.append(contents.strip())
+    return "\n\n".join(parts).strip()
+
+
+def _canonicalize_article_response(provider: str, raw: Dict[str, Any]):
+    """Normalize AISA X Article payloads into a filing-friendly shape.
+
+    AISA returns articles as {"article": {...}, "status": "success", "msg": "success"}.
+    The tweet canonicalizer expects tweet objects with id/text, so applying it to
+    this shape misclassified valid article responses as empty tweets.
+    """
+    data = raw.get("data") if isinstance(raw, dict) and isinstance(raw.get("data"), dict) else raw
+    article = data.get("article") if isinstance(data, dict) else None
+    debug = {
+        "provider_attempted": provider,
+        "upstream_status_code": _raw_status_code(raw),
+        "response_shape_summary": _shape_summary(raw),
+        "parse_stage": "article_payload",
+    }
+    if isinstance(data, dict) and data.get("msg"):
+        debug["upstream_msg"] = data.get("msg")
+
+    if not isinstance(article, dict) or not article:
+        debug["error_class"] = "ARTICLE_NOT_FOUND" if isinstance(data, dict) and "article" in data else "ARTICLE_SCHEMA_MISMATCH"
+        debug["parse_stage"] = "article_missing"
+        return {
+            "provider": provider,
+            "action": "article_get",
+            "article": None,
+            "debug": debug,
+        }, True, debug
+
+    contents = article.get("contents")
+    body_text = _article_text_from_contents(contents)
+    normalized_article = dict(article)
+    normalized_article["body"] = body_text
+    normalized_article["content"] = body_text
+    normalized_article["body_length"] = len(body_text)
+    normalized_article["metadata"] = {
+        "id": article.get("id"),
+        "title": article.get("title"),
+        "createdAt": article.get("createdAt"),
+        "author": article.get("author"),
+        "cover_media_img_url": article.get("cover_media_img_url"),
+        "preview_text": article.get("preview_text"),
+        "likeCount": article.get("likeCount"),
+        "replyCount": article.get("replyCount"),
+        "quoteCount": article.get("quoteCount"),
+        "viewCount": article.get("viewCount"),
+    }
+
+    is_empty = not bool(body_text)
+    if is_empty:
+        debug["error_class"] = "ARTICLE_EMPTY_BODY"
+        debug["parse_stage"] = "body_empty"
+    else:
+        debug["parse_stage"] = "body_extracted"
+        debug["body_length"] = len(body_text)
+        debug["content_blocks"] = len(contents) if isinstance(contents, list) else None
+
+    canonical = {
+        "provider": provider,
+        "action": "article_get",
+        "article": _serialize(normalized_article),
+        "title": article.get("title"),
+        "content": body_text,
+        "body": body_text,
+        "body_length": len(body_text),
+        "metadata": _serialize(normalized_article["metadata"]),
+        "debug": debug,
+    }
+    return canonical, is_empty, debug
 
 
 def _primary_tweet(canonical: Dict[str, Any]):
@@ -278,8 +394,13 @@ def all_x_read(
             canonical = map_aisa_search_result(raw, query or tweet_id or username or "")
         # Single tweet / article
         elif action in ("tweet_get", "article_get"):
-            canonical, is_empty = _canonicalize_tweet_response(used_provider, action, raw)
             fallback_meta = None
+            debug_meta = None
+
+            if action == "article_get":
+                canonical, is_empty, debug_meta = _canonicalize_article_response(used_provider, raw)
+            else:
+                canonical, is_empty = _canonicalize_tweet_response(used_provider, action, raw)
 
             # Auto-fallback to official X when AISA returned no usable tweet.
             # Only fires when the caller did NOT explicitly pin to x_official already.
@@ -287,26 +408,58 @@ def all_x_read(
                 fb_kwargs = {k: v for k, v in kwargs.items() if k != "provider_override"}
                 fallback_meta = {"attempted": True, "provider": "x_official"}
                 try:
-                    fb_result = route_read(action, provider_override="x_official", **fb_kwargs)
-                    fb_provider = fb_result.get("provider", "x_official")
-                    fb_canonical, fb_empty = _canonicalize_tweet_response(
-                        fb_provider, action, fb_result.get("raw", {})
-                    )
-                    if not fb_empty:
-                        canonical = fb_canonical
-                        used_provider = fb_provider
-                        is_empty = False
-                        fallback_meta["succeeded"] = True
-                    else:
+                    if action == "article_get":
+                        # Official X API does not expose article bodies through this adapter.
+                        # Probe tweet_get only to classify whether the parent tweet exists.
+                        fallback_meta["action"] = "tweet_get"
+                        fallback_meta["purpose"] = "metadata_probe_only"
+                        fb_result = route_read("tweet_get", provider_override="x_official", **fb_kwargs)
+                        fb_provider = fb_result.get("provider", "x_official")
+                        fb_canonical, fb_empty = _canonicalize_tweet_response(
+                            fb_provider, "tweet_get", fb_result.get("raw", {})
+                        )
                         fallback_meta["succeeded"] = False
-                        fallback_meta["reason"] = "x_official also returned empty"
+                        fallback_meta["tweet_available"] = not fb_empty
+                        fallback_meta["reason"] = "x_official has no article body endpoint in all_x"
+                    else:
+                        fb_result = route_read(action, provider_override="x_official", **fb_kwargs)
+                        fb_provider = fb_result.get("provider", "x_official")
+                        fb_canonical, fb_empty = _canonicalize_tweet_response(
+                            fb_provider, action, fb_result.get("raw", {})
+                        )
+                        if not fb_empty:
+                            canonical = fb_canonical
+                            used_provider = fb_provider
+                            is_empty = False
+                            fallback_meta["succeeded"] = True
+                        else:
+                            fallback_meta["succeeded"] = False
+                            fallback_meta["reason"] = "x_official also returned empty"
                 except Exception as e:
                     fallback_meta["succeeded"] = False
                     fallback_meta["error"] = str(e)
 
-            # Hard-fail when both providers returned nothing usable.
-            # Filing flows must NOT proceed with empty tweets misreported as success.
+            # Hard-fail when all provider paths returned nothing usable.
+            # Filing flows must NOT proceed with empty tweets/articles misreported as success.
             if is_empty:
+                if action == "article_get":
+                    error_class = "ARTICLE_EMPTY_BODY"
+                    if isinstance(debug_meta, dict) and debug_meta.get("error_class"):
+                        error_class = debug_meta["error_class"]
+                    msg = f"article_get returned no article body from AISA. tweet_id={tweet_id or tweet_ids or '?'}"
+                    return tool_error(
+                        msg,
+                        success=False,
+                        provider=used_provider,
+                        action=action,
+                        tweet_id=tweet_id or tweet_ids,
+                        error_class=error_class,
+                        debug={
+                            "aisa": debug_meta or {},
+                            "fallback": fallback_meta,
+                        },
+                    )
+
                 msg = f"{action} returned no tweet content from AISA"
                 if fallback_meta:
                     err = fallback_meta.get("error") or fallback_meta.get("reason") or "unknown"
@@ -314,7 +467,15 @@ def all_x_read(
                 else:
                     msg += "; x_official fallback skipped (provider explicitly pinned)"
                 msg += f". tweet_id={tweet_id or tweet_ids or '?'}"
-                return tool_error(msg, success=False)
+                return tool_error(
+                    msg,
+                    success=False,
+                    provider=used_provider,
+                    action=action,
+                    tweet_id=tweet_id or tweet_ids,
+                    error_class="TWEET_EMPTY",
+                    debug={"fallback": fallback_meta},
+                )
 
             if fallback_meta is not None:
                 canonical["fallback"] = fallback_meta

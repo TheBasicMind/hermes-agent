@@ -135,6 +135,37 @@ export default function ProfilesPage() {
     }
   };
 
+  const copyToClipboard = async (text: string): Promise<boolean> => {
+    // navigator.clipboard only works in secure contexts (https/localhost).
+    // The dashboard is often served over plain HTTP on LAN/Tailscale IPs,
+    // so provide a click-gesture fallback that works there too.
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        // Fall through to legacy textarea copy path.
+      }
+    }
+
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.top = "-9999px";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      return ok;
+    } catch {
+      return false;
+    }
+  };
+
   const handleCopyTerminalCommand = async (name: string) => {
     let cmd: string;
     try {
@@ -144,10 +175,11 @@ export default function ProfilesPage() {
       showToast(`${t.status.error}: ${e}`, "error");
       return;
     }
-    try {
-      await navigator.clipboard.writeText(cmd);
+
+    const copied = await copyToClipboard(cmd);
+    if (copied) {
       showToast(`${t.profiles.commandCopied}: ${cmd}`, "success");
-    } catch {
+    } else {
       showToast(`${t.profiles.copyFailed}: ${cmd}`, "error");
     }
   };

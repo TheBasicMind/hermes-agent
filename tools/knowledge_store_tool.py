@@ -29,7 +29,7 @@ KNOWLEDGE_STORE_DB = HERMES_HOME / "data" / "openclaw" / "knowledge-store" / "kn
 KNOWLEDGE_STORE_SCRIPTS = HERMES_HOME / "integrations" / "openclaw" / "knowledge-store" / "scripts"
 
 _KNOWLEDGE_MODULES = [
-    "config", "db", "models", "chunker", "stability", "uri", "search", "kb_api", "providers", "providers.together"
+    "config", "db", "models", "chunker", "stability", "uri", "search", "kb_api", "providers", "providers.together", "providers.voyage"
 ]
 
 
@@ -56,12 +56,31 @@ def _knowledge_store_config() -> dict[str, Any]:
     db_path = Path(db_path)
     if not db_path.is_absolute():
         db_path = HERMES_HOME / db_path
+
+    # Canonical embedding provider lock:
+    # keep knowledge_store aligned with Enumerait retrieval semantics (Voyage).
+    canonical = {
+        "embed_provider": "voyage",
+        "embed_model": "voyage-3-large",
+        "embed_base_url": "https://api.voyageai.com/v1",
+    }
+    lock_embed_provider = bool(cfg.get("lock_embed_provider", True))
+
+    embed_provider = cfg.get("embed_provider", canonical["embed_provider"])
+    embed_model = cfg.get("embed_model", canonical["embed_model"])
+    embed_base_url = cfg.get("embed_base_url", canonical["embed_base_url"])
+
+    if lock_embed_provider:
+        embed_provider = canonical["embed_provider"]
+        embed_model = canonical["embed_model"]
+        embed_base_url = canonical["embed_base_url"]
+
     return {
         "db_path": str(db_path),
-        "embed_provider": cfg.get("embed_provider", "together"),
-        "embed_model": cfg.get("embed_model", "intfloat/multilingual-e5-large-instruct"),
+        "embed_provider": embed_provider,
+        "embed_model": embed_model,
         "embed_dimensions": int(cfg.get("embed_dimensions", 1024)),
-        "embed_base_url": cfg.get("embed_base_url", "https://api.together.xyz/v1"),
+        "embed_base_url": embed_base_url,
         "embed_batch_size": int(cfg.get("embed_batch_size", 128)),
         "embed_timeout": int(cfg.get("embed_timeout", 30)),
         "embed_max_retries": int(cfg.get("embed_max_retries", 3)),
@@ -74,6 +93,7 @@ def _knowledge_store_config() -> dict[str, Any]:
         "recheck_unknown_days": int(cfg.get("recheck_unknown_days", 7)),
         "default_top_k": int(cfg.get("default_top_k", 10)),
         "rrf_k": int(cfg.get("rrf_k", 60)),
+        "lock_embed_provider": lock_embed_provider,
     }
 
 

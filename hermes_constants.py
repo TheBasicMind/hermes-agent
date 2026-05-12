@@ -113,28 +113,41 @@ def display_hermes_home() -> str:
 
 
 def get_subprocess_home() -> str | None:
-    """Return a per-profile HOME directory for subprocesses, or None.
+    """Return a canonical per-profile HOME directory for subprocesses.
 
-    When ``{HERMES_HOME}/home/`` exists on disk, subprocesses should use it
-    as ``HOME`` so system tools (git, ssh, gh, npm …) write their configs
-    inside the Hermes data directory instead of the OS-level ``/root`` or
-    ``~/``.  This provides:
-
-    * **Docker persistence** — tool configs land inside the persistent volume.
-    * **Profile isolation** — each profile gets its own git identity, SSH
-      keys, gh tokens, etc.
+    Preferred location is ``{HERMES_HOME}/home/``.  In Paul's project-local
+    deployment the process-level ``HOME`` may still contain the old default
+    path (``~/.hermes/profiles/<name>/home``) from a wrapper or already-running
+    gateway.  Do not propagate that stale path after the compatibility symlink
+    is removed; remap it to ``{hermes_root}/profiles/<name>/home`` when that
+    canonical directory exists.
 
     The Python process's own ``os.environ["HOME"]`` and ``Path.home()`` are
     **never** modified — only subprocess environments should inject this value.
-    Activation is directory-based: if the ``home/`` subdirectory doesn't
-    exist, returns ``None`` and behavior is unchanged.
+    Activation is directory-based: if no canonical ``home/`` subdirectory
+    exists, returns ``None`` and behavior is unchanged.
     """
-    hermes_home = os.getenv("HERMES_HOME")
-    if not hermes_home:
-        return None
-    profile_home = os.path.join(hermes_home, "home")
-    if os.path.isdir(profile_home):
-        return profile_home
+    hermes_home = os.getenv("HERMES_HOME", "").strip()
+    if hermes_home:
+        profile_home = os.path.join(hermes_home, "home")
+        if os.path.isdir(profile_home):
+            return profile_home
+
+    current_home = os.getenv("HOME", "").strip()
+    marker = f"{os.sep}.hermes{os.sep}profiles{os.sep}"
+    if marker in current_home:
+        suffix = current_home.split(marker, 1)[1]
+        parts = suffix.split(os.sep)
+        if len(parts) >= 2 and parts[1] == "home" and parts[0]:
+            try:
+                root = get_default_hermes_root()
+            except Exception:
+                root = Path(hermes_home) if hermes_home else None
+            if root is not None:
+                canonical = root / "profiles" / parts[0] / "home"
+                if canonical.is_dir():
+                    return str(canonical)
+
     return None
 
 

@@ -13,7 +13,10 @@ def _hermes_home_path() -> Path:
         from hermes_constants import get_hermes_home  # local import to avoid cycles
         return get_hermes_home()
     except Exception:
-        return Path(os.path.expanduser("~/.hermes"))
+        val = os.environ.get("HERMES_HOME", "").strip()
+        if val:
+            return Path(val)
+        raise RuntimeError("HERMES_HOME is required when hermes_constants cannot be imported")
 
 
 def build_write_denied_paths(home: str) -> set[str]:
