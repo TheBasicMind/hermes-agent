@@ -9553,12 +9553,33 @@ def cmd_dashboard(args):
 
     from hermes_cli.web_server import start_server
 
+    try:
+        from hermes_cli.config import load_config
+
+        dashboard_cfg = load_config().get("dashboard", {}) or {}
+        if not isinstance(dashboard_cfg, dict):
+            dashboard_cfg = {}
+    except Exception:
+        dashboard_cfg = {}
+
+    host = args.host if args.host is not None else str(dashboard_cfg.get("host") or "127.0.0.1")
+    try:
+        port = int(args.port if args.port is not None else dashboard_cfg.get("port", 9119))
+    except (TypeError, ValueError):
+        port = 9119
+    allow_public_arg = getattr(args, "insecure", None)
+    allow_public = bool(
+        allow_public_arg
+        if allow_public_arg is not None
+        else dashboard_cfg.get("insecure", dashboard_cfg.get("allow_public", False))
+    )
+
     embedded_chat = args.tui or os.environ.get("HERMES_DASHBOARD_TUI") == "1"
     start_server(
-        host=args.host,
-        port=args.port,
+        host=host,
+        port=port,
         open_browser=not args.no_open,
-        allow_public=getattr(args, "insecure", False),
+        allow_public=allow_public,
         embedded_chat=embedded_chat,
     )
 
@@ -12206,10 +12227,15 @@ Examples:
         description="Launch the Hermes Agent web dashboard for managing config, API keys, and sessions",
     )
     dashboard_parser.add_argument(
-        "--port", type=int, default=9119, help="Port (default 9119)"
+        "--port",
+        type=int,
+        default=None,
+        help="Port (default: dashboard.port config or 9119)",
     )
     dashboard_parser.add_argument(
-        "--host", default="127.0.0.1", help="Host (default 127.0.0.1)"
+        "--host",
+        default=None,
+        help="Host (default: dashboard.host config or 127.0.0.1)",
     )
     dashboard_parser.add_argument(
         "--no-open", action="store_true", help="Don't open browser automatically"
@@ -12217,6 +12243,7 @@ Examples:
     dashboard_parser.add_argument(
         "--insecure",
         action="store_true",
+        default=None,
         help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
     )
     dashboard_parser.add_argument(
