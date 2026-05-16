@@ -1,5 +1,6 @@
 """Agent-callable workflow tool (single compressed verb-dispatched action)."""
 from __future__ import annotations
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -99,3 +100,92 @@ def workflow(*, verb: str, name: Optional[str] = None,
         return {"runs": list_runs(name)}
 
     raise ValueError(f"unknown verb: {verb}")
+
+
+WORKFLOW_SCHEMA = {
+    "name": "workflow",
+    "description": """Manage and run dependency-graph workflows on top of cron jobs.
+
+A workflow is a declarative YAML at ${HERMES_HOME}/workflows/<name>.yaml that
+references existing cron jobs by ID and expresses ordering via `needs:` edges.
+Use this when a multi-step pipeline (e.g. phase 1 -> phase 2 verticals -> phase 3)
+needs explicit dependencies rather than time-based stagger.
+
+Verbs:
+- list: list workflows in the active profile
+- show: show parsed workflow definition (requires name)
+- validate: validate a workflow file (requires name)
+- run: manually trigger a workflow; returns run_id (requires name)
+- runs: list workflow runs (optional name filter)
+- status: get run + per-step state (requires run_id)
+- logs: fetch run logs; optional step filter (requires run_id)
+- cancel: cancel an in-flight run (requires run_id)
+
+Workflows reference cron-job package IDs in the active profile's jobs.json.
+Set the underlying cron job's schedule.kind to 'manual' if it should only run
+as a workflow step (avoids double-firing).
+
+When a step runs as part of a workflow, its prompt is prefixed with a
+`## Workflow Context` block listing parent step results, and two env vars
+are set: HERMES_WORKFLOW_RUN_ID and HERMES_WORKFLOW_NEEDS_FILE (path to
+JSON with full parent results). Use the inline summary as the authoritative
+input — don't re-derive parent outputs from canonical storage.
+
+See the hermes-job-queue skill for full operational guidance.""",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "verb": {
+                "type": "string",
+                "enum": ["list", "show", "validate", "run", "runs",
+                         "status", "logs", "cancel"],
+                "description": "The action to perform.",
+            },
+            "name": {
+                "type": "string",
+                "description": "Workflow name (filename stem under workflows/). Required for show/validate/run; optional filter for runs.",
+            },
+            "run_id": {
+                "type": "string",
+                "description": "Workflow run identifier. Required for status/logs/cancel.",
+            },
+            "step": {
+                "type": "string",
+                "description": "Optional step id filter for the logs verb.",
+            },
+        },
+        "required": ["verb"],
+    },
+}
+
+
+def check_workflow_requirements() -> bool:
+    """Workflow tool is available wherever cron management is available.
+
+    Same gate as cronjob: interactive CLI, gateway sessions, or exec_ask
+    contexts. The queue is internal (SQLite + filesystem under HERMES_HOME),
+    no external services.
+    """
+    return bool(
+        os.getenv("HERMES_INTERACTIVE")
+        or os.getenv("HERMES_GATEWAY_SESSION")
+        or os.getenv("HERMES_EXEC_ASK")
+    )
+
+
+# --- Registry ---
+from tools.registry import registry, tool_error  # noqa: E402
+
+registry.register(
+    name="workflow",
+    toolset="workflow",
+    schema=WORKFLOW_SCHEMA,
+    handler=lambda args, **kw: workflow(
+        verb=args.get("verb", ""),
+        name=args.get("name"),
+        run_id=args.get("run_id"),
+        step=args.get("step"),
+    ),
+    check_fn=check_workflow_requirements,
+    emoji="🔀",
+)

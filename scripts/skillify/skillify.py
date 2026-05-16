@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Skillify generator CLI.
+"""Skillify capability generator CLI.
 
 Reads a capability config (YAML) and emits ``skd_<name>/SKILL.md`` +
 ``adapters/<capability>.yaml`` into a user-chosen external skills dir.
 
 Usage:
-    ./venv/bin/python scripts/skillify/skillify.py create --config skillify.config.yaml browser
-    ./venv/bin/python scripts/skillify/skillify.py refresh --config skillify.config.yaml
+    skillify create browser
+    skillify refresh
+    skillify --config /path/to/other.yaml create browser
 
-See docs/superpowers/specs/2026-04-18-skillify-design.md for the contract.
+The default config is ``skillify.config.yaml`` next to the Hermes agent root.
+Copy ``scripts/skillify/config.example.yaml`` there to get started.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ class CapabilityConfig:
     facade_name: str
     operation_mode: str  # "pass-through" | "rename"
     description: str
+    emoji: str
     load_on: List[str]
     rename: Dict[str, str]  # source_tool_name -> operation_name
 
@@ -66,6 +69,7 @@ def load_config(path: Path) -> SkillifyConfig:
             facade_name=str(body.get("facade_name", f"skd_{name}")),
             operation_mode=str(body.get("operation_mode", "pass-through")),
             description=str(body.get("description", "")).strip(),
+            emoji=str(body.get("emoji", "🔧")),
             load_on=[str(s) for s in (body.get("load_on") or [])],
             rename={str(k): str(v) for k, v in (body.get("rename") or {}).items()},
         )
@@ -260,21 +264,95 @@ def do_refresh(cfg: SkillifyConfig, tools: Mapping[str, Mapping[str, Any]]) -> N
         do_create(cfg, name, tools)
 
 
+def do_remove(cfg: SkillifyConfig, capability_name: str) -> None:
+    cap = cfg.capabilities.get(capability_name)
+    if cap is None:
+        raise SystemExit(
+            f"Unknown capability {capability_name!r}. Configured: "
+            f"{', '.join(sorted(cfg.capabilities))}."
+        )
+    import shutil
+
+    removed = []
+    skill_dir = cfg.output_dir / cap.facade_name
+    if skill_dir.exists():
+        shutil.rmtree(skill_dir)
+        removed.append(str(skill_dir))
+
+    adapter_path = cfg.output_dir / "adapters" / f"{cap.name}.yaml"
+    if adapter_path.exists():
+        adapter_path.unlink()
+        removed.append(str(adapter_path))
+
+    if removed:
+        for r in removed:
+            print(f"Removed {r}")
+    else:
+        print(f"Nothing to remove for capability {capability_name!r} (files not found).")
+
+
+def do_list(cfg: SkillifyConfig) -> None:
+    for name, cap in cfg.capabilities.items():
+        active = (cfg.output_dir / cap.facade_name / "SKILL.md").exists()
+        tick = "✓" if active else "✗"
+        status = "skillified  " if active else "not skillified"
+        short_desc = cap.description.split(".")[0].split("\n")[0].strip()
+        print(f"  {tick} {status}  {name}  {cap.emoji} {short_desc}")
+
+
+def _default_config_path() -> Path:
+    """Return skillify.config.yaml next to the Hermes agent root."""
+    return Path(__file__).resolve().parents[2] / "skillify.config.yaml"
+
+
 def main(argv: List[str] = None) -> int:
-    parser = argparse.ArgumentParser(description="Skillify capability generator")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Generate skd_* skill files and adapter YAML for Hermes skillified capabilities.\n\n"
+            "Examples:\n"
+            "  skillify list                    # show all capabilities and status\n"
+            "  skillify create browser          # generate/refresh skd_browser\n"
+            "  skillify refresh                 # regenerate all capabilities\n"
+            "  skillify remove browser          # delete skd_browser files\n"
+            "  skillify --config my.yaml create browser"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
-        "--config", type=Path, required=True, help="Path to skillify config YAML."
+        "--config",
+        type=Path,
+        default=None,
+        help=f"Path to skillify config YAML (default: {_default_config_path()})",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("list", help="List all configured capabilities and their status.")
 
     p_create = sub.add_parser("create", help="Create artifacts for one capability.")
     p_create.add_argument("capability", help="Capability name (key under 'capabilities').")
 
     sub.add_parser("refresh", help="Regenerate artifacts for every configured capability.")
 
+    p_remove = sub.add_parser("remove", help="Delete generated files for one capability.")
+    p_remove.add_argument("capability", help="Capability name (key under 'capabilities').")
+
     args = parser.parse_args(argv)
 
-    cfg = load_config(args.config)
+    config_path = args.config or _default_config_path()
+    if not config_path.exists():
+        print(f"Config not found: {config_path}", file=sys.stderr)
+        print(f"Copy scripts/skillify/config.example.yaml to {config_path} to get started.", file=sys.stderr)
+        return 1
+    cfg = load_config(config_path)
+
+    if args.cmd == "list":
+        do_list(cfg)
+        return 0
+
+    if args.cmd == "remove":
+        do_remove(cfg, args.capability)
+        return 0
+
     tools = _load_registered_tools()
 
     if args.cmd == "create":
