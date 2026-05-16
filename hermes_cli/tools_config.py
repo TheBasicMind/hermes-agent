@@ -60,6 +60,7 @@ CONFIGURABLE_TOOLSETS = [
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
+    ("skills_v2",       "📚 Skills v2 (Enumerait)",     "skills_list2, skill_view2, skill_manage2"),
     ("todo",            "📋 Task Planning",             "todo"),
     ("memory",          "💾 Memory",                    "persistent memory across sessions"),
     ("session_search",  "🔎 Session Search",            "search past conversations"),

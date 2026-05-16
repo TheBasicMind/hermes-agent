@@ -5381,6 +5381,9 @@ def _find_stale_dashboard_pids() -> list[int]:
         "hermes dashboard",
         "hermes_cli.main dashboard",
         "hermes_cli/main.py dashboard",
+        # launchd-managed dashboards on macOS run uvicorn directly rather than
+        # through `hermes dashboard`, so include the ASGI app target too.
+        "uvicorn hermes_cli.web_server:app",
     ]
     self_pid = os.getpid()
     dashboard_pids: list[int] = []

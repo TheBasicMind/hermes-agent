@@ -853,6 +853,49 @@ class TestNewEndpoints:
             },
         ]
 
+    def test_skill_preload_list_includes_relative_skill_folder_path(self):
+        from hermes_constants import get_hermes_home
+
+        skill_dir = get_hermes_home() / "skills" / "productivity" / "demo-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: demo-skill\n"
+            "description: Demo description\n"
+            "---\n\n"
+            "# Demo Skill\n",
+            encoding="utf-8",
+        )
+
+        resp = self.client.get("/api/skills/preload")
+
+        assert resp.status_code == 200
+        skill = next(item for item in resp.json() if item["name"] == "demo-skill")
+        assert skill["skill_path"] == "productivity/demo-skill"
+
+    def test_skill_markdown_endpoint_returns_raw_markdown_and_relative_path(self):
+        from hermes_constants import get_hermes_home
+
+        skill_dir = get_hermes_home() / "skills" / "software-development" / "markdown-demo"
+        skill_dir.mkdir(parents=True)
+        markdown = (
+            "---\n"
+            "name: markdown-demo\n"
+            "description: Tap me\n"
+            "---\n\n"
+            "# Markdown Demo\n\n"
+            "**Rendered** body.\n"
+        )
+        (skill_dir / "SKILL.md").write_text(markdown, encoding="utf-8")
+
+        resp = self.client.get("/api/skills/markdown-demo/markdown")
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["name"] == "markdown-demo"
+        assert payload["skill_path"] == "software-development/markdown-demo"
+        assert payload["markdown"] == markdown
+
     def test_toolsets_list(self):
         resp = self.client.get("/api/tools/toolsets")
         assert resp.status_code == 200

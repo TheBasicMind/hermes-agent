@@ -39,6 +39,8 @@ _HERMES_CORE_TOOLS = [
     "vision_analyze", "image_generate",
     # Skills
     "skills_list", "skill_view", "skill_manage",
+    # Enumerait-synced Skills v2 (separate names/toolset; does not shadow core tools)
+    "skills_list2", "skill_view2", "skill_manage2",
     # OpenClaw-derived local data tools
     "market_intel_intake", "market_intel_triage",
     "knowledge_store_write", "knowledge_store_read",
@@ -119,6 +121,12 @@ TOOLSETS = {
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
         "tools": ["skills_list", "skill_view", "skill_manage"],
+        "includes": []
+    },
+
+    "skills_v2": {
+        "description": "Enumerait-synced skill browsing and management tools (v2 names; legacy skill tools remain unchanged)",
+        "tools": ["skills_list2", "skill_view2", "skill_manage2"],
         "includes": []
     },
 

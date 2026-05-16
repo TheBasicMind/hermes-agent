@@ -88,6 +88,55 @@
   line-height: 1.35;
 }
 
+.skill-preload-path-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.3rem;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.76rem;
+}
+
+.skill-preload-path-row span {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.skill-preload-path-row code {
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.35rem;
+  background: hsl(var(--muted) / 0.55);
+  color: hsl(var(--foreground));
+  padding: 0.12rem 0.35rem;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+}
+
+.skill-preload-description-button {
+  display: inline-block;
+  margin: 0.25rem 0 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 0.18rem;
+}
+
+.skill-preload-description-button:hover,
+.skill-preload-description-button:focus-visible {
+  color: hsl(var(--foreground));
+  text-decoration-color: currentColor;
+  outline: none;
+}
+
 .skill-preload-toggle {
   appearance: none;
   border: 1px solid hsl(var(--border));
@@ -131,4 +180,160 @@
 .skill-preload-error {
   color: hsl(var(--destructive));
   border-color: hsl(var(--destructive) / 0.35);
+}
+
+.skill-markdown-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.skill-markdown-header h1 {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 650;
+}
+
+.skill-markdown-back {
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.5rem;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  padding: 0.4rem 0.65rem;
+  font-size: 0.82rem;
+}
+
+.skill-markdown-mode {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  padding: 0.35rem 0.65rem;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.78rem;
+  user-select: none;
+}
+
+.skill-markdown-mode input {
+  accent-color: hsl(var(--primary));
+}
+
+.skill-markdown-textarea {
+  width: 100%;
+  min-height: 62vh;
+  padding: 1rem;
+  border: 0;
+  border-radius: 0.75rem;
+  resize: vertical;
+  background: hsl(var(--muted) / 0.35);
+  color: hsl(var(--foreground));
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.skill-markdown-preview {
+  padding: 1rem;
+  color: hsl(var(--foreground));
+  line-height: 1.55;
+}
+
+.skill-markdown-preview h1,
+.skill-markdown-preview h2,
+.skill-markdown-preview h3,
+.skill-markdown-preview h4 {
+  margin: 0.8rem 0 0.4rem;
+  font-weight: 700;
+}
+
+.skill-markdown-preview h1 { font-size: 1.35rem; }
+.skill-markdown-preview h2 { font-size: 1.15rem; }
+.skill-markdown-preview h3 { font-size: 1rem; }
+.skill-markdown-preview h4 { font-size: 0.92rem; }
+
+.skill-markdown-preview p {
+  margin: 0.35rem 0;
+}
+
+.markdown-bullet {
+  display: flex;
+  gap: 0.45rem;
+  margin: 0.2rem 0;
+}
+
+.markdown-bullet-dot {
+  color: hsl(var(--muted-foreground));
+}
+
+.markdown-blank {
+  height: 0.45rem;
+}
+
+.skill-markdown-preview pre {
+  overflow: auto;
+  margin: 0.65rem 0;
+  padding: 0.75rem;
+  border-radius: 0.55rem;
+  background: hsl(var(--muted));
+}
+
+.skill-markdown-preview code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-size: 0.86em;
+}
+
+@media (max-width: 640px) {
+  .skill-preload-page {
+    padding: 0.75rem;
+  }
+
+  .skill-preload-hero,
+  .skill-markdown-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .skill-preload-stats {
+    justify-content: flex-start;
+  }
+
+  .skill-preload-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 0.95rem;
+  }
+
+  .skill-preload-main {
+    width: 100%;
+  }
+
+  .skill-preload-description-button {
+    display: block;
+    width: 100%;
+    min-height: 44px;
+    padding: 0.45rem 0;
+    color: hsl(var(--foreground));
+    text-decoration-color: currentColor;
+  }
+
+  .skill-preload-toggle {
+    align-self: flex-start;
+    min-height: 44px;
+    min-width: 8.5rem;
+  }
+
+  .skill-markdown-mode,
+  .skill-markdown-back {
+    min-height: 44px;
+  }
+
+  .skill-markdown-textarea {
+    min-height: 68vh;
+    font-size: 0.9rem;
+  }
 }
