@@ -2862,6 +2862,69 @@ class SkillToggle(BaseModel):
     enabled: bool
 
 
+def _skill_path_relative_to_scan_root(skill_md: Path, scan_root: Path) -> str:
+    """Return a display path from a skills root to the containing skill folder."""
+    try:
+        return skill_md.parent.relative_to(scan_root).as_posix()
+    except ValueError:
+        return skill_md.parent.name
+
+
+def _iter_skill_markdown_files_for_web():
+    """Yield ``(skill_md, scan_root)`` pairs using the same roots as skill discovery."""
+    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from tools.skills_tool import SKILLS_DIR, _EXCLUDED_SKILL_DIRS
+
+    roots: list[Path] = []
+    live_skills_dir = get_hermes_home() / "skills"
+    for candidate in (SKILLS_DIR, live_skills_dir):
+        if candidate.exists() and candidate not in roots:
+            roots.append(candidate)
+    roots.extend(get_external_skills_dirs())
+
+    for root in roots:
+        for skill_md in iter_skill_index_files(root, "SKILL.md"):
+            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+                continue
+            yield skill_md, root
+
+
+def _skill_display_paths_by_name() -> dict[str, str]:
+    """Map skill frontmatter names to their relative folder path."""
+    from tools.skills_tool import _parse_frontmatter, skill_matches_platform
+
+    paths: dict[str, str] = {}
+    for skill_md, root in _iter_skill_markdown_files_for_web():
+        try:
+            content = skill_md.read_text(encoding="utf-8")[:4000]
+            frontmatter, _body = _parse_frontmatter(content)
+            if not skill_matches_platform(frontmatter):
+                continue
+            name = str(frontmatter.get("name") or skill_md.parent.name)
+            paths.setdefault(name, _skill_path_relative_to_scan_root(skill_md, root))
+        except (OSError, UnicodeDecodeError):
+            continue
+    return paths
+
+
+def _find_skill_markdown_for_web(name: str) -> tuple[Path, str]:
+    """Find a skill by frontmatter/directory name and return its SKILL.md path and display path."""
+    from tools.skills_tool import _parse_frontmatter, skill_matches_platform
+
+    for skill_md, root in _iter_skill_markdown_files_for_web():
+        try:
+            content = skill_md.read_text(encoding="utf-8")
+            frontmatter, _body = _parse_frontmatter(content[:4000])
+            if not skill_matches_platform(frontmatter):
+                continue
+            skill_name = str(frontmatter.get("name") or skill_md.parent.name)
+            if skill_name == name:
+                return skill_md, _skill_path_relative_to_scan_root(skill_md, root)
+        except (OSError, UnicodeDecodeError):
+            continue
+    raise HTTPException(status_code=404, detail="Skill not found")
+
+
 @app.get("/api/skills")
 async def get_skills():
     from tools.skills_tool import _find_all_skills
@@ -2896,7 +2959,9 @@ async def get_skill_preload():
     disabled = get_disabled_skills(config)
     preload_enabled = get_preload_enabled_skills(config)
     skills = [s for s in _find_all_skills(skip_disabled=True) if s["name"] not in disabled]
+    skill_paths = _skill_display_paths_by_name()
     for s in skills:
+        s["skill_path"] = skill_paths.get(s["name"], s.get("category") or s["name"])
         s["available"] = True
         s["enabled"] = True
         inject_frontmatter = True if preload_enabled is None else s["name"] in preload_enabled
@@ -2905,6 +2970,16 @@ async def get_skill_preload():
         s["inject_frontmatter"] = inject_frontmatter
         s["preload"] = inject_frontmatter  # Backwards-compatible UI field name.
     return skills
+
+
+@app.get("/api/skills/{name}/markdown")
+async def get_skill_markdown(name: str):
+    skill_md, skill_path = _find_skill_markdown_for_web(name)
+    try:
+        markdown = skill_md.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read skill markdown: {exc}")
+    return {"name": name, "skill_path": skill_path, "markdown": markdown}
 
 
 @app.put("/api/skills/preload/toggle")

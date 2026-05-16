@@ -1242,6 +1242,10 @@ DEFAULT_CONFIG = {
         # Optional allow-list for skills injected into the startup catalog.
         # Missing/None preserves legacy behaviour: all enabled skills preload.
         "preload_enabled_skills": None,
+        "config": {
+            # Parent/root Enumerait node for v2 skill-node synchronization.
+            "enumerait_skill_node": "976aa312-5c06-46d7-878e-bdd576b7733f",
+        },
     },
 
     # Curator — background skill maintenance.
