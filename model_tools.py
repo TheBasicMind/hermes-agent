@@ -26,6 +26,7 @@ import asyncio
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
@@ -294,11 +295,37 @@ def get_tool_definitions(
             cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
         except (FileNotFoundError, OSError, ImportError):
             cfg_fp = None
+        # Skillified capabilities can dynamically hide source toolsets based on
+        # the installed skd_* skills.  Include a cheap filesystem fingerprint in
+        # the cache key so installing/removing a skd_* skill (or test
+        # monkeypatching the skills-dir resolver) invalidates memoized schemas.
+        try:
+            from tools import skillified_tool as _skillified_tool
+            resolver_id = id(_skillified_tool._resolve_skills_dirs)
+            skillify_parts = []
+            for _skills_dir in _skillified_tool._resolve_skills_dirs():
+                _base = Path(_skills_dir)
+                if not _base.is_dir():
+                    continue
+                for _entry in sorted(_base.iterdir()):
+                    if not _entry.is_dir() or not _entry.name.startswith("skd_"):
+                        continue
+                    _skill_md = _entry / "SKILL.md"
+                    try:
+                        _stat = _skill_md.stat()
+                    except OSError:
+                        continue
+                    skillify_parts.append((str(_skill_md), _stat.st_mtime_ns, _stat.st_size))
+            skillify_fp = (resolver_id, tuple(skillify_parts))
+        except Exception:
+            skillify_fp = None
+
         cache_key = (
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
             cfg_fp,
+            skillify_fp,
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
