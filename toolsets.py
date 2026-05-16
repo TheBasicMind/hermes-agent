@@ -208,6 +208,12 @@ TOOLSETS = {
         "tools": ["cronjob"],
         "includes": []
     },
+
+    "workflow": {
+        "description": "Dependency-graph workflow runner over cron packages",
+        "tools": ["workflow"],
+        "includes": []
+    },
     
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
