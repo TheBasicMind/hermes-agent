@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 
 from hermes_cli.main import _web_ui_build_needed, _build_web_ui, _run_npm_install_deterministic
+from hermes_cli.web_workspace import validate_web_workspace_dependencies
 
 
 def _touch(path: Path, offset: float = 0.0) -> None:
@@ -30,6 +31,11 @@ def _make_web_dir(tmp_path: Path) -> tuple[Path, Path]:
     (web_dir / "package.json").touch()
     dist_dir = tmp_path / "hermes_cli" / "web_dist"
     return web_dir, dist_dir
+
+
+def _write_json(path: Path, payload: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
 
 
 class TestWebUIBuildNeeded:
@@ -271,6 +277,84 @@ class TestBuildWebUISkipsWhenFresh:
         args, kwargs = mock_run.call_args
         assert args[0] == ["/usr/bin/npm", "ci", "--workspace", "web", "--silent"]
         assert kwargs["cwd"] == tmp_path
+
+
+class TestWebWorkspaceDependencyIntegrity:
+
+    def test_accepts_matching_exact_dependency_version(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        _write_json(
+            web_dir / "package.json",
+            '{"dependencies":{"@nous-research/ui":"0.18.2"}}',
+        )
+        _write_json(
+            tmp_path / "node_modules" / "@nous-research" / "ui" / "package.json",
+            '{"name":"@nous-research/ui","version":"0.18.2","exports":{"./ui/*":{"import":"./dist/ui/*.js"}}}',
+        )
+        (tmp_path / "node_modules" / "@nous-research" / "ui" / "dist" / "ui" / "components" / "button.js").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "node_modules" / "@nous-research" / "ui" / "dist" / "ui" / "components" / "button.js").write_text("", encoding="utf-8")
+        (web_dir / "src").mkdir(parents=True, exist_ok=True)
+        (web_dir / "src" / "App.tsx").write_text(
+            'import { Button } from "@nous-research/ui/ui/components/button";\n',
+            encoding="utf-8",
+        )
+
+        assert validate_web_workspace_dependencies(web_dir) == []
+
+    def test_reports_exact_version_mismatch(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        _write_json(
+            web_dir / "package.json",
+            '{"dependencies":{"@nous-research/ui":"0.18.2"}}',
+        )
+        _write_json(
+            web_dir / "node_modules" / "@nous-research" / "ui" / "package.json",
+            '{"name":"@nous-research/ui","version":"0.10.0","exports":{"./ui/*":{"import":"./dist/ui/*.js"}}}',
+        )
+        (web_dir / "src").mkdir(parents=True, exist_ok=True)
+        (web_dir / "src" / "App.tsx").write_text("", encoding="utf-8")
+
+        errors = validate_web_workspace_dependencies(web_dir)
+
+        assert any("declares 0.18.2" in err and "0.10.0" in err for err in errors)
+
+    def test_reports_missing_exported_subpath(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        _write_json(
+            web_dir / "package.json",
+            '{"dependencies":{"@nous-research/ui":"0.18.2"}}',
+        )
+        _write_json(
+            tmp_path / "node_modules" / "@nous-research" / "ui" / "package.json",
+            '{"name":"@nous-research/ui","version":"0.18.2","exports":{"./ui/*":{"import":"./dist/ui/*.js"}}}',
+        )
+        (web_dir / "src").mkdir(parents=True, exist_ok=True)
+        (web_dir / "src" / "App.tsx").write_text(
+            'import { Input } from "@nous-research/ui/ui/components/input";\n',
+            encoding="utf-8",
+        )
+
+        errors = validate_web_workspace_dependencies(web_dir)
+
+        assert any("./ui/components/input" in err for err in errors)
+
+    def test_build_fails_fast_when_workspace_dependencies_are_inconsistent(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        _write_json(
+            web_dir / "package.json",
+            '{"dependencies":{"@nous-research/ui":"0.18.2"}}',
+        )
+        install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main._web_ui_build_needed", return_value=True), \
+             patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_cp), \
+             patch("hermes_cli.main.validate_web_workspace_dependencies",
+                   return_value=["@nous-research/ui declares 0.18.2 but installed package.json reports '0.10.0'"]), \
+             patch("hermes_cli.main._run_with_idle_timeout") as mock_idle:
+            result = _build_web_ui(web_dir, fatal=True)
+
+        assert result is False
+        mock_idle.assert_not_called()
 
 
 class TestBuildWebUIRetryAndStaleFallback:

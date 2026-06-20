@@ -264,6 +264,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli.web_workspace import validate_web_workspace_dependencies, workspace_root_for
+
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
 from hermes_cli.subcommands.cron import build_cron_parser
@@ -4886,6 +4888,17 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         _relay(r1)
         if fatal:
             _say("  Run manually:  npm install --workspace web && npm run build -w web")
+        return False
+    workspace_errors = validate_web_workspace_dependencies(web_dir)
+    if workspace_errors:
+        _say(
+            f"  {'✗' if fatal else '⚠'} Web UI workspace dependencies are inconsistent"
+            + ("" if fatal else " (hermes web will not be available)")
+        )
+        for issue in workspace_errors:
+            _say(f"  - {issue}")
+        ws_root = workspace_root_for(web_dir)
+        _say(f"  Run manually:  cd {ws_root} && npm ci --silent")
         return False
     # First attempt — stream output via idle-timeout helper (issue #33788).
     # capture_output=True on a long Vite build looks identical to a hang;
