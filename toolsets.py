@@ -43,6 +43,7 @@ _HERMES_CORE_TOOLS = [
     "vision_analyze", "image_generate",
     # Skills
     "skills_list", "skill_view", "skill_manage",
+    "skills_list2", "skill_view2", "skill_manage2",
     # Browser automation
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
@@ -166,6 +167,12 @@ TOOLSETS = {
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
         "tools": ["skills_list", "skill_view", "skill_manage"],
+        "includes": []
+    },
+
+    "skills_v2": {
+        "description": "Enumerait-synced v2 skill tools",
+        "tools": ["skills_list2", "skill_view2", "skill_manage2"],
         "includes": []
     },
     
