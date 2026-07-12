@@ -1351,13 +1351,28 @@ class PluginManager:
         logger.debug("  user: %d manifest(s)", len(user_manifests))
         manifests.extend(user_manifests)
 
-        # 3. Project plugins (./.hermes/plugins/)
+        # 3. Project plugins (./.hermes/plugins/, or an explicitly pinned
+        # directory). Long-lived dispatchers may spawn workers with cwd set
+        # to a scratch workspace, so project-plugin discovery cannot rely on
+        # cwd alone in those children.
         if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
-            project_dir = Path.cwd() / ".hermes" / "plugins"
-            logger.debug("Scanning project plugins: %s", project_dir)
-            project_manifests = self._scan_directory(project_dir, source="project")
-            logger.debug("  project: %d manifest(s)", len(project_manifests))
-            manifests.extend(project_manifests)
+            raw_project_dirs = os.environ.get("HERMES_PROJECT_PLUGINS_DIR", "")
+            if raw_project_dirs.strip():
+                project_dirs = [
+                    Path(p).expanduser()
+                    for p in raw_project_dirs.split(os.pathsep)
+                    if p.strip()
+                ]
+            else:
+                project_dirs = [Path.cwd() / ".hermes" / "plugins"]
+            project_count = 0
+            for project_dir in project_dirs:
+                logger.debug("Scanning project plugins: %s", project_dir)
+                project_manifests = self._scan_directory(project_dir, source="project")
+                logger.debug("  project %s: %d manifest(s)", project_dir, len(project_manifests))
+                project_count += len(project_manifests)
+                manifests.extend(project_manifests)
+            logger.debug("  project total: %d manifest(s)", project_count)
         else:
             logger.debug(
                 "Project plugins disabled (set HERMES_ENABLE_PROJECT_PLUGINS=1 to enable)"

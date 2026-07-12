@@ -336,6 +336,43 @@ class TestPluginDiscovery:
         assert "proj_plugin" in mgr._plugins
         assert mgr._plugins["proj_plugin"].enabled
 
+    def test_discover_project_plugins_from_pinned_env_dir(self, tmp_path, monkeypatch):
+        """Project plugins can be discovered even when cwd is a scratch workspace."""
+        hermes_home = tmp_path / "hermes_test"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "true")
+
+        project_plugins = tmp_path / "project" / ".hermes" / "plugins"
+        _make_plugin_dir(project_plugins, "proj_plugin")
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        monkeypatch.chdir(scratch)
+        monkeypatch.setenv("HERMES_PROJECT_PLUGINS_DIR", str(project_plugins))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "proj_plugin" in mgr._plugins
+        assert mgr._plugins["proj_plugin"].enabled
+
+    def test_pinned_project_plugins_still_require_enable_flag(self, tmp_path, monkeypatch):
+        """The explicit project-plugin path must not bypass the project-plugin gate."""
+        hermes_home = tmp_path / "hermes_test"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HERMES_ENABLE_PROJECT_PLUGINS", raising=False)
+
+        project_plugins = tmp_path / "project" / ".hermes" / "plugins"
+        _make_plugin_dir(project_plugins, "proj_plugin")
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        monkeypatch.chdir(scratch)
+        monkeypatch.setenv("HERMES_PROJECT_PLUGINS_DIR", str(project_plugins))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "proj_plugin" not in mgr._plugins
+
     def test_discover_project_plugins_skipped_by_default(self, tmp_path, monkeypatch):
         """Project plugins are not discovered unless explicitly enabled."""
         project_dir = tmp_path / "project"

@@ -2952,6 +2952,57 @@ class TestSharedBoardPaths:
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
 
+    def test_dispatcher_spawn_pins_project_plugin_dir(
+        self, tmp_path, monkeypatch
+    ):
+        # Workers run with cwd set to their scratch/worktree workspace, so
+        # project plugin discovery must be pinned before spawning.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+        monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1")
+        monkeypatch.delenv("HERMES_PROJECT_PLUGINS_DIR", raising=False)
+
+        project = tmp_path / "project"
+        project_plugins = project / ".hermes" / "plugins"
+        project_plugins.mkdir(parents=True)
+        monkeypatch.chdir(project)
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4243
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        task = kb.Task(
+            id="t_project_plugins",
+            title="x",
+            body=None,
+            assignee="coder",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=str(tmp_path / "ws"),
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+        )
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        kb._default_spawn(task, str(workspace))
+
+        assert captured["env"]["HERMES_PROJECT_PLUGINS_DIR"] == str(
+            project_plugins.resolve()
+        )
+
 
 # ---------------------------------------------------------------------------
 # latest_summary / latest_summaries — surface task_runs.summary handoffs

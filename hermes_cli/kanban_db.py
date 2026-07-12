@@ -7762,6 +7762,11 @@ def _default_spawn(
     # board slug still forces it to the right directory.
     resolved_board = _normalize_board_slug(board) or get_current_board()
     env["HERMES_KANBAN_BOARD"] = resolved_board
+    if env.get("HERMES_ENABLE_PROJECT_PLUGINS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        if not env.get("HERMES_PROJECT_PLUGINS_DIR"):
+            project_plugins = Path.cwd() / ".hermes" / "plugins"
+            if project_plugins.exists():
+                env["HERMES_PROJECT_PLUGINS_DIR"] = str(project_plugins.resolve())
     # HERMES_PROFILE is the author the kanban_comment tool defaults to.
     # `hermes -p <assignee>` activates the profile, but the env var is
     # what the tool reads — set it explicitly here so comments are
