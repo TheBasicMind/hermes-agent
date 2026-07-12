@@ -608,6 +608,7 @@ def run_conversation(
     interrupted = False
     failed = False
     codex_ack_continuations = 0
+    codex_tool_intent_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
@@ -4686,6 +4687,7 @@ def run_conversation(
                         pass
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                codex_tool_intent_continuations = 0
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
@@ -5099,6 +5101,41 @@ def run_conversation(
                     continue
 
                 codex_ack_continuations = 0
+
+                if (
+                    agent.api_mode == "codex_responses"
+                    and agent.valid_tool_names
+                    and codex_tool_intent_continuations < 2
+                    and agent._looks_like_codex_tool_intent_stall(final_response)
+                ):
+                    codex_tool_intent_continuations += 1
+                    logger.warning(
+                        "Codex response described tool calls but contained no "
+                        "structured function_call items; continuing turn "
+                        "(%d/2). Snippet: %r",
+                        codex_tool_intent_continuations,
+                        final_response[:300],
+                    )
+                    interim_msg = agent._build_assistant_message(
+                        assistant_message, "incomplete"
+                    )
+                    messages.append(interim_msg)
+                    agent._emit_interim_assistant_message(interim_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[System: Your last response described or attempted "
+                            "tool calls, but it contained no structured "
+                            "function_call items, so no tool ran. If a tool is "
+                            "needed, emit the structured tool call now. If you "
+                            "cannot proceed, use an available blocking/failure "
+                            "tool rather than describing the intended call.]"
+                        ),
+                    })
+                    agent._session_messages = messages
+                    continue
+
+                codex_tool_intent_continuations = 0
 
                 if truncated_response_parts:
                     final_response = "".join(truncated_response_parts) + final_response

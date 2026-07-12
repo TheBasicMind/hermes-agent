@@ -2730,6 +2730,46 @@ def intent_ack_continuation_enabled(agent) -> bool:
     return intent_ack_continuation_mode(agent) != "off"
 
 
+def looks_like_codex_tool_intent_stall(agent, assistant_content: str) -> bool:
+    """Detect Codex plain-text loops that intend tool use but emit no tool call.
+
+    This is distinct from a normal acknowledgement. In the failure mode seen
+    in long Kanban/Appraiser sessions, Codex returns many completed
+    ``message`` items like "Need tool call", "call functions.foo", "tool call
+    now" and then stops. There are no structured ``function_call`` items for
+    the dispatcher to execute, so accepting the text as final leaves the agent
+    with no action and the Kanban worker exits cleanly without complete/block.
+    """
+    assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
+    if not assistant_text:
+        return False
+    if "tool" not in assistant_text and "functions." not in assistant_text:
+        return False
+
+    intent_patterns = [
+        r"\b(?:need|must|should|will|would|going to|try|trying|attempt|attempting)\b.{0,80}\b(?:call|use|execute|run|emit)\b.{0,80}\b(?:tool|functions\.)",
+        r"\b(?:call|use|execute|run|emit)\b.{0,80}\b(?:the\s+)?(?:tool|tools|functions\.)",
+        r"\bfunctions\.[a-z_][\w.]*",
+        r"\bmulti_tool_use\.parallel\b",
+        r"\btool call(?:s)?\b",
+    ]
+    hits = 0
+    for pattern in intent_patterns:
+        hits += len(re.findall(pattern, assistant_text, flags=re.IGNORECASE | re.DOTALL))
+        if hits >= 2:
+            return True
+
+    # Single self-diagnostic forms are also highly suspicious: a genuine
+    # final answer should not say the call failed to materialise.
+    return bool(
+        re.search(
+            r"\b(?:stuck|looping|glitch|bug|nothing|won['’]?t)\b.{0,120}\b(?:tool|functions\.)",
+            assistant_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    )
+
+
 
 
 def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
@@ -3200,6 +3240,7 @@ __all__ = [
     "repair_tool_call",
     "sanitize_api_messages",
     "looks_like_codex_intermediate_ack",
+    "looks_like_codex_tool_intent_stall",
     "copy_reasoning_content_for_api",
     "cleanup_dead_connections",
     "extract_api_error_context",
