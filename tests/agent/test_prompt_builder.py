@@ -569,6 +569,48 @@ class TestBuildSkillsSystemPrompt:
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
 
+    def test_preload_allowlist_hides_non_preloaded_skills(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  preload_enabled_skills: [preload-on]\n"
+        )
+        for name in ["preload-on", "preload-off"]:
+            skill_dir = tmp_path / "skills" / "general" / name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {name} desc\n---\n"
+            )
+
+        result = build_skills_system_prompt()
+
+        assert "preload-on" in result
+        assert "preload-off" not in result
+
+    def test_preload_allowlist_filters_disk_snapshot(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for name in ["preload-on", "preload-off"]:
+            skill_dir = tmp_path / "skills" / "general" / name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {name} desc\n---\n"
+            )
+
+        first = build_skills_system_prompt()
+        assert "preload-on" in first
+        assert "preload-off" in first
+
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        clear_skills_system_prompt_cache(clear_snapshot=False)
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  preload_enabled_skills: [preload-on]\n"
+        )
+
+        second = build_skills_system_prompt()
+
+        assert "preload-on" in second
+        assert "preload-off" not in second
+
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)
@@ -1644,5 +1686,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
