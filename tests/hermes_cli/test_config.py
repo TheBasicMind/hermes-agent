@@ -26,6 +26,7 @@ from hermes_cli.config import (
     sanitize_env_file,
     set_config_value,
     write_platform_config_field,
+    _mkdir_existing_dir_safe,
     _sanitize_env_lines,
 )
 
@@ -77,6 +78,25 @@ class TestEnsureHermesHome:
             soul_path.write_text(_LEGACY_TEMPLATE_SOULS[0] + "\n", encoding="utf-8")
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
+
+    def test_directory_creation_tolerates_existing_dir_race(self, tmp_path, monkeypatch):
+        target = tmp_path / "skills"
+        target.mkdir()
+        real_mkdir = Path.mkdir
+        calls = {"count": 0}
+
+        def flaky_mkdir(self, *args, **kwargs):
+            if self == target and calls["count"] == 0:
+                calls["count"] += 1
+                raise FileExistsError(str(self))
+            return real_mkdir(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", flaky_mkdir)
+
+        _mkdir_existing_dir_safe(target)
+
+        assert calls["count"] == 1
+        assert target.is_dir()
 
     def test_preserves_legacy_template_with_user_persona(self, tmp_path):
         # If the user typed a persona alongside the scaffold, the content no
@@ -1805,5 +1825,4 @@ class TestCodexAppServerAutoConfig:
 
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
-
 
