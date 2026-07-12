@@ -275,6 +275,28 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
     return DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
 
 
+# Grace period for a claim that never reaches the worker-spawn boundary. This
+# is intentionally much shorter than the 15-minute claim TTL because no worker
+# PID and no ``spawned`` event means there is no worker to be slow: the
+# dispatcher/gateway likely died after ``claim_task`` and before
+# ``_set_worker_pid``. The next dispatcher tick should repair that false
+# running state quickly without touching legitimately spawned slow workers.
+DEFAULT_UNSPAWNED_CLAIM_GRACE_SECONDS = 120
+
+
+def _resolve_unspawned_claim_grace_seconds() -> int:
+    """Return the no-worker-pid launch-boundary grace period in seconds."""
+    raw = os.environ.get("HERMES_KANBAN_UNSPAWNED_CLAIM_GRACE_SECONDS", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if parsed >= 0:
+            return parsed
+    return DEFAULT_UNSPAWNED_CLAIM_GRACE_SECONDS
+
+
 # Worker-context caps so build_worker_context() stays bounded on
 # pathological boards (retry-heavy tasks, comment storms, giant
 # summaries). Values chosen to fit a typical 100k-char LLM prompt with
@@ -3743,6 +3765,102 @@ def release_stale_claims(
     return reclaimed
 
 
+def release_unspawned_claims(
+    conn: sqlite3.Connection,
+    *,
+    grace_seconds: Optional[int] = None,
+) -> int:
+    """Reset claims that never reached worker spawn.
+
+    Covers the dispatcher crash window:
+
+    ``claim_task`` succeeded -> gateway/dispatcher process died -> no
+    ``spawned`` event and no ``worker_pid`` were ever recorded.
+
+    TTL-based reclaim waits 15 minutes by default, and crash detection skips
+    rows without a worker PID. This short-grace recovery keeps those tasks
+    from sitting falsely ``running`` while still ignoring fresh claims that are
+    inside the normal claim-to-spawn launch window.
+    """
+    grace = (
+        _resolve_unspawned_claim_grace_seconds()
+        if grace_seconds is None
+        else max(0, int(grace_seconds))
+    )
+    now = int(time.time())
+    cutoff = now - grace
+    rows = conn.execute(
+        """
+        SELECT t.id, t.claim_lock, t.claim_expires, t.last_heartbeat_at,
+               t.current_run_id, COALESCE(r.started_at, t.started_at) AS active_started_at
+          FROM tasks t
+          LEFT JOIN task_runs r ON r.id = t.current_run_id
+         WHERE t.status = 'running'
+           AND t.worker_pid IS NULL
+           AND t.current_run_id IS NOT NULL
+           AND COALESCE(r.started_at, t.started_at) IS NOT NULL
+           AND COALESCE(r.started_at, t.started_at) <= ?
+           AND NOT EXISTS (
+                SELECT 1
+                  FROM task_events e
+                 WHERE e.task_id = t.id
+                   AND e.run_id = t.current_run_id
+                   AND e.kind = 'spawned'
+           )
+        """,
+        (cutoff,),
+    ).fetchall()
+    reclaimed = 0
+    for row in rows:
+        started_at = int(row["active_started_at"])
+        elapsed = max(0, now - started_at)
+        payload = {
+            "reason": "claimed_without_spawn",
+            "claim_lock": row["claim_lock"],
+            "worker_pid": None,
+            "claim_expires": (
+                int(row["claim_expires"])
+                if row["claim_expires"] is not None else None
+            ),
+            "last_heartbeat_at": (
+                int(row["last_heartbeat_at"])
+                if row["last_heartbeat_at"] is not None else None
+            ),
+            "started_at": started_at,
+            "elapsed_seconds": elapsed,
+            "grace_seconds": grace,
+            "now": now,
+        }
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, "
+                "last_heartbeat_at = NULL "
+                "WHERE id = ? AND status = 'running' "
+                "AND claim_lock IS ? AND worker_pid IS NULL "
+                "AND current_run_id IS ?",
+                (row["id"], row["claim_lock"], row["current_run_id"]),
+            )
+            if cur.rowcount != 1:
+                continue
+            run_id = _end_run(
+                conn, row["id"],
+                outcome="reclaimed", status="reclaimed",
+                error=(
+                    "claimed_without_spawn: no worker_pid/spawned event "
+                    f"after {elapsed}s"
+                ),
+                metadata=payload,
+            )
+            _append_event(
+                conn, row["id"], "reclaimed",
+                payload,
+                run_id=run_id,
+            )
+            reclaimed += 1
+    return reclaimed
+
+
 def reclaim_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -7043,6 +7161,7 @@ def _dispatch_once_locked(
 
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
+    result.reclaimed += release_unspawned_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )

@@ -1805,6 +1805,73 @@ def test_dispatch_reclaims_stale_before_spawning(kanban_home):
     assert res.reclaimed == 1
 
 
+def test_dispatch_reclaims_unspawned_claim_after_short_grace(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="claim-without-spawn", assignee="alice")
+        kb.claim_task(conn, t)
+        old = int(time.time()) - 180
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ?, worker_pid = NULL WHERE id = ?",
+                (old, t),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ?, worker_pid = NULL "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (old, t),
+            )
+
+        res = kb.dispatch_once(conn, dry_run=True)
+
+        task = kb.get_task(conn, t)
+        assert res.reclaimed == 1
+        assert task.status == "ready"
+        assert task.claim_lock is None
+        events = kb.list_events(conn, t)
+        reclaimed = [e for e in events if e.kind == "reclaimed"]
+        assert reclaimed
+        assert reclaimed[-1].payload["reason"] == "claimed_without_spawn"
+
+
+def test_dispatch_does_not_reclaim_fresh_unspawned_claim(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="fresh-claim", assignee="alice")
+        kb.claim_task(conn, t)
+
+        res = kb.dispatch_once(conn, dry_run=True)
+
+        task = kb.get_task(conn, t)
+        assert res.reclaimed == 0
+        assert task.status == "running"
+
+
+def test_dispatch_does_not_reclaim_pidless_claim_with_spawned_event(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="spawned-pidless", assignee="alice")
+        kb.claim_task(conn, t)
+        run_id = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?", (t,)
+        ).fetchone()["current_run_id"]
+        old = int(time.time()) - 180
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ?, worker_pid = NULL WHERE id = ?",
+                (old, t),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ?, worker_pid = NULL "
+                "WHERE id = ?",
+                (old, run_id),
+            )
+            kb._append_event(conn, t, "spawned", {"pid": 12345}, run_id=run_id)
+
+        res = kb.dispatch_once(conn, dry_run=True)
+
+        task = kb.get_task(conn, t)
+        assert res.reclaimed == 0
+        assert task.status == "running"
+
+
 # ---------------------------------------------------------------------------
 # Respawn guard (check_respawn_guard + dispatch_once integration)
 # ---------------------------------------------------------------------------
