@@ -1170,6 +1170,89 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     return False, None
 
 
+def _runtime_base_home() -> Path:
+    """Return the supervisor-owned base Hermes home for runtime status files."""
+    override = os.getenv("HERMES_RUNTIME_HOME")
+    if override:
+        return Path(override)
+
+    home = get_hermes_home()
+    if home.parent.name == "profiles":
+        return home.parent.parent
+    return home
+
+
+def _runtime_run_root() -> Path:
+    override = os.getenv("HERMES_RUNTIME_RUN_ROOT")
+    if override:
+        return Path(override)
+    return _runtime_base_home() / "run" / "runtime"
+
+
+def _current_dashboard_profile() -> str:
+    profile_override = os.getenv("HERMES_RUNTIME_DASHBOARD_PROFILE")
+    if profile_override:
+        return profile_override
+
+    home = get_hermes_home()
+    if home.parent.name == "profiles":
+        return home.name
+    return "default"
+
+
+def _current_gateway_child() -> str:
+    target_override = os.getenv("HERMES_RUNTIME_GATEWAY_CHILD")
+    if target_override:
+        return target_override
+
+    profile = _current_dashboard_profile()
+    if profile in {"light", "coder"}:
+        return f"gateway-{profile}"
+    return "gateway-default"
+
+
+def _parse_runtime_status_line(line: str) -> tuple[str, dict[str, str]] | None:
+    parts = line.rstrip("\n").split("\t")
+    if not parts or not parts[0]:
+        return None
+    fields: dict[str, str] = {}
+    for item in parts[1:]:
+        key, sep, value = item.partition("=")
+        if sep:
+            fields[key] = value
+    return parts[0], fields
+
+
+def _read_runtime_supervisor_status() -> dict[str, dict[str, str]]:
+    status_path = _runtime_run_root() / "status.tsv"
+    try:
+        lines = status_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+
+    status: dict[str, dict[str, str]] = {}
+    for line in lines:
+        parsed = _parse_runtime_status_line(line)
+        if parsed is None:
+            continue
+        name, fields = parsed
+        status[name] = fields
+    return status
+
+
+def _current_supervised_gateway_status() -> dict[str, str] | None:
+    return _read_runtime_supervisor_status().get(_current_gateway_child())
+
+
+def _runtime_control_command() -> str | None:
+    command = os.getenv("HERMES_RUNTIME_CONTROL_COMMAND", "hermes-runtime-control")
+    if os.path.isabs(command) and Path(command).exists():
+        return command
+    if shutil.which(command):
+        return command
+    return None
+
+
 # Image MIME types this endpoint will serve. Extension-allowlisted so an
 # authenticated caller can't pull non-image files through it.
 _MEDIA_CONTENT_TYPES = {
@@ -2415,6 +2498,13 @@ async def get_status(profile: Optional[str] = None):
         gateway_pid = get_running_pid()
         gateway_running = gateway_pid is not None
         remote_health_body: dict | None = None
+        supervisor_gateway = _current_supervised_gateway_status()
+        if not gateway_running and supervisor_gateway:
+            gateway_running = supervisor_gateway.get("alive") == "yes"
+            try:
+                gateway_pid = int(supervisor_gateway["pid"]) if gateway_running else None
+            except (KeyError, TypeError, ValueError):
+                gateway_pid = None
 
         if not gateway_running and _GATEWAY_HEALTH_URL:
             loop = asyncio.get_running_loop()
@@ -2479,10 +2569,15 @@ async def get_status(profile: Optional[str] = None):
                 # stopped/None state so the dashboard shows the correct badge.
                 if gateway_state in {None, "stopped"}:
                     gateway_state = "running"
+            elif gateway_running and supervisor_gateway is not None:
+                if gateway_state in {None, "stopped"}:
+                    gateway_state = "running"
 
         # If there was no runtime info at all but the health probe confirmed alive,
         # ensure we still report the gateway as running (no shared volume scenario).
         if gateway_running and gateway_state is None and remote_health_body is not None:
+            gateway_state = "running"
+        if gateway_running and gateway_state is None and supervisor_gateway is not None:
             gateway_state = "running"
 
         active_sessions = 0
@@ -3072,12 +3167,14 @@ def _dashboard_spawn_executable() -> str:
     return exe
 
 
-def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
-    """Spawn ``hermes <subcommand>`` detached and record the Popen handle.
-
-    Uses the running interpreter's ``hermes_cli.main`` module so the action
-    inherits the same venv/PYTHONPATH the web server is using.
-    """
+def _spawn_action_command(
+    cmd: List[str],
+    name: str,
+    *,
+    command_key: Optional[Tuple[str, ...]] = None,
+    env_overrides: Optional[Dict[str, str]] = None,
+) -> subprocess.Popen:
+    """Spawn an action command detached and record the Popen handle."""
     log_file_name = _ACTION_LOG_FILES[name]
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = _ACTION_LOG_DIR / log_file_name
@@ -3086,14 +3183,12 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
         f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
     )
 
-    cmd = [_dashboard_spawn_executable(), "-m", "hermes_cli.main", *subcommand]
-
     popen_kwargs: Dict[str, Any] = {
         "cwd": str(PROJECT_ROOT),
         "stdin": subprocess.DEVNULL,
         "stdout": log_file,
         "stderr": subprocess.STDOUT,
-        "env": {**os.environ, "HERMES_NONINTERACTIVE": "1"},
+        "env": {**os.environ, "HERMES_NONINTERACTIVE": "1", **(env_overrides or {})},
     }
     if sys.platform == "win32":
         popen_kwargs["creationflags"] = windows_detach_flags()
@@ -3106,9 +3201,19 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     # fd per spawned action.
     log_file.close()
     _ACTION_RESULTS.pop(name, None)
-    _ACTION_COMMANDS[name] = tuple(subcommand)
+    _ACTION_COMMANDS[name] = command_key or tuple(cmd)
     _ACTION_PROCS[name] = proc
     return proc
+
+
+def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
+    """Spawn ``hermes <subcommand>`` detached and record the Popen handle.
+
+    Uses the running interpreter's ``hermes_cli.main`` module so the action
+    inherits the same venv/PYTHONPATH the web server is using.
+    """
+    cmd = [_dashboard_spawn_executable(), "-m", "hermes_cli.main", *subcommand]
+    return _spawn_action_command(cmd, name, command_key=tuple(subcommand))
 
 
 def _tail_lines(path: Path, n: int) -> List[str]:
@@ -3181,13 +3286,26 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
 
     Returns ``(proc, reused)``.
     """
-    subcommand = _gateway_subcommand(profile, "restart")
+    control = _runtime_control_command()
+    target = _current_gateway_child()
+    if control and target in _read_runtime_supervisor_status():
+        subcommand = ["runtime-control", "restart", target]
+    else:
+        subcommand = _gateway_subcommand(profile, "restart")
     existing = _ACTION_PROCS.get("gateway-restart")
     if existing is not None and existing.poll() is None:
         existing_command = _ACTION_COMMANDS.get("gateway-restart")
         if existing_command is None or existing_command == tuple(subcommand):
             return existing, True
         raise RuntimeError("gateway restart already in progress for another profile")
+    if control and subcommand[:2] == ["runtime-control", "restart"]:
+        proc = _spawn_action_command(
+            [control, "restart", target],
+            "gateway-restart",
+            command_key=tuple(subcommand),
+            env_overrides={"HERMES_HOME": str(_runtime_base_home())},
+        )
+        return proc, False
     return _spawn_hermes_action(subcommand, "gateway-restart"), False
 
 

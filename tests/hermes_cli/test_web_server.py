@@ -267,6 +267,71 @@ class TestWebServerEndpoints:
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
 
+    def test_get_status_uses_runtime_supervisor_gateway_status(self, tmp_path, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        runtime_home = tmp_path / "runtime-home"
+        status_dir = runtime_home / "run" / "runtime"
+        status_dir.mkdir(parents=True)
+        (status_dir / "status.tsv").write_text(
+            "gateway-default\tpid=4242\talive=yes\tpolicy=restart\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_RUNTIME_HOME", str(runtime_home))
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(web_server, "read_runtime_status", lambda: None)
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is True
+        assert data["gateway_pid"] == 4242
+        assert data["gateway_state"] == "running"
+
+    def test_gateway_restart_uses_runtime_supervisor_child(self, tmp_path, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        runtime_home = tmp_path / "runtime-home"
+        runtime_home.mkdir()
+        captured = {}
+
+        class FakeProc:
+            pid = 4343
+
+            def poll(self):
+                return None
+
+        def fake_spawn(cmd, name, *, command_key=None, env_overrides=None):
+            captured["cmd"] = cmd
+            captured["name"] = name
+            captured["command_key"] = command_key
+            captured["env_overrides"] = env_overrides
+            return FakeProc()
+
+        web_server._ACTION_PROCS.pop("gateway-restart", None)
+        web_server._ACTION_COMMANDS.pop("gateway-restart", None)
+        monkeypatch.setattr(web_server, "_runtime_control_command", lambda: "/usr/local/bin/hermes-runtime-control")
+        monkeypatch.setattr(web_server, "_current_gateway_child", lambda: "gateway-samwise")
+        monkeypatch.setattr(web_server, "_runtime_base_home", lambda: runtime_home)
+        monkeypatch.setattr(
+            web_server,
+            "_read_runtime_supervisor_status",
+            lambda: {"gateway-samwise": {"pid": "123", "alive": "yes"}},
+        )
+        monkeypatch.setattr(web_server, "_spawn_action_command", fake_spawn)
+
+        proc, reused = web_server._spawn_gateway_restart("samwise")
+
+        assert reused is False
+        assert proc.pid == 4343
+        assert captured == {
+            "cmd": ["/usr/local/bin/hermes-runtime-control", "restart", "gateway-samwise"],
+            "name": "gateway-restart",
+            "command_key": ("runtime-control", "restart", "gateway-samwise"),
+            "env_overrides": {"HERMES_HOME": str(runtime_home)},
+        }
+
     def test_gateway_drain_begin_writes_marker(self):
         from gateway import drain_control
 
