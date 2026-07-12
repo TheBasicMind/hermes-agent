@@ -4093,6 +4093,48 @@ class TestNewEndpoints:
             },
         ]
 
+    def test_skill_preload_controls_frontmatter_injection_only(self, monkeypatch):
+        import tools.skills_tool as skills_tool
+        import hermes_cli.skills_config as skills_config
+        import hermes_cli.web_server as web_server
+
+        saved = {}
+
+        def _fake_find_all_skills(*, skip_disabled=False):
+            return [
+                {"name": "humanizer", "description": "Humanize text", "category": "creative"},
+                {"name": "original-writing", "description": "Original writing", "category": "writing"},
+            ]
+
+        monkeypatch.setattr(skills_tool, "_find_all_skills", _fake_find_all_skills)
+        monkeypatch.setattr(skills_config, "get_disabled_skills", lambda config: set())
+        monkeypatch.setattr(skills_config, "get_preload_enabled_skills", lambda config: {"original-writing"})
+        monkeypatch.setattr(
+            skills_config,
+            "save_preload_enabled_skills",
+            lambda config, enabled: saved.setdefault("enabled", sorted(enabled)),
+        )
+        monkeypatch.setattr(web_server, "load_config", lambda: {"skills": {"preload_enabled_skills": ["original-writing"]}})
+        monkeypatch.setattr(
+            web_server,
+            "_skill_display_paths_by_name",
+            lambda: {"humanizer": "creative/humanizer", "original-writing": "writing/original-writing"},
+        )
+
+        resp = self.client.get("/api/skills/preload")
+
+        assert resp.status_code == 200
+        by_name = {row["name"]: row for row in resp.json()}
+        assert by_name["humanizer"]["enabled"] is True
+        assert by_name["humanizer"]["inject_frontmatter"] is False
+        assert by_name["original-writing"]["enabled"] is True
+        assert by_name["original-writing"]["inject_frontmatter"] is True
+
+        toggle = self.client.put("/api/skills/preload/toggle", json={"name": "humanizer", "enabled": True})
+
+        assert toggle.status_code == 200
+        assert saved["enabled"] == ["humanizer", "original-writing"]
+
     def test_toolsets_list(self):
         resp = self.client.get("/api/tools/toolsets")
         assert resp.status_code == 200

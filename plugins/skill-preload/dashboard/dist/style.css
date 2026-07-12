@@ -1,0 +1,155 @@
+.skill-preload-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.skill-preload-hero,
+.skill-markdown-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.skill-preload-hero h1,
+.skill-markdown-header h1 {
+  margin: 0 0 6px;
+  font-size: 28px;
+  line-height: 1.2;
+}
+
+.skill-preload-hero p {
+  margin: 0;
+  max-width: 900px;
+  color: var(--muted-foreground, #8f9c98);
+}
+
+.skill-preload-stats,
+.skill-preload-name-line,
+.skill-preload-path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.skill-preload-controls {
+  max-width: 560px;
+}
+
+.skill-preload-card-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.skill-preload-category {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground, #8f9c98);
+}
+
+.skill-preload-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 12px 0;
+  border-top: 1px solid var(--border, rgba(255,255,255,0.12));
+}
+
+.skill-preload-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.skill-preload-name {
+  font-weight: 700;
+}
+
+.skill-preload-path-row {
+  font-size: 12px;
+  color: var(--muted-foreground, #8f9c98);
+}
+
+.skill-preload-path-row code {
+  white-space: normal;
+  word-break: break-word;
+}
+
+.skill-preload-description-button,
+.skill-markdown-back {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.skill-preload-description-button {
+  color: var(--muted-foreground, #8f9c98);
+}
+
+.skill-preload-description-button:hover,
+.skill-markdown-back:hover {
+  text-decoration: underline;
+}
+
+.skill-preload-toggle {
+  min-width: 112px;
+  min-height: 36px;
+  border: 1px solid var(--border, rgba(255,255,255,0.18));
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.skill-preload-toggle.is-on {
+  background: var(--primary, #f4e3c4);
+  color: var(--primary-foreground, #10201d);
+}
+
+.skill-preload-toggle.is-off {
+  opacity: 0.72;
+}
+
+.skill-preload-toggle.is-busy {
+  cursor: wait;
+}
+
+.skill-preload-muted {
+  color: var(--muted-foreground, #8f9c98);
+}
+
+.skill-preload-error {
+  color: var(--destructive, #ff8a8a);
+}
+
+.skill-markdown-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow: auto;
+  max-height: calc(100vh - 280px);
+}
+
+@media (max-width: 640px) {
+  .skill-preload-hero,
+  .skill-markdown-header,
+  .skill-preload-row {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .skill-preload-toggle {
+    width: 100%;
+    min-height: 44px;
+  }
+}
