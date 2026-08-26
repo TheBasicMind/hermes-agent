@@ -6,7 +6,8 @@ Hermes' richer tool surface — web search, browser automation,
 delegate_task subagents, vision analysis, persistent memory, skills,
 cross-session search, image generation, TTS — is unreachable.
 
-This module exposes a curated subset of those Hermes tools to the
+This module exposes the configured Hermes CLI toolsets, after removing tools
+that are unsafe, redundant, or stateful in a Codex-owned loop, to the
 spawned codex subprocess via stdio MCP. Codex registers it as a normal
 MCP server (per `~/.codex/config.toml [mcp_servers.hermes-tools]`) and
 the user gets full Hermes capability inside a Codex turn.
@@ -18,7 +19,9 @@ Scope (what we expose):
     _get_images / _console / _vision
   - vision_analyze                       — image inspection by vision model
   - image_generate                       — image generation
-  - skill_view, skills_list              — Hermes' skill library
+  - skills_list2 / skill_view2 /         — Enumerait-backed Hermes skills
+    skill_manage2
+  - session_search                       — stateless transcript recall
   - text_to_speech                       — TTS
   - kanban_* (complete/block/comment/    — kanban worker + orchestrator
     heartbeat/show/list/create/            handoff (stateless: read env var,
@@ -29,8 +32,9 @@ What we DO NOT expose:
   - read_file / write_file / patch       — codex's apply_patch + shell
   - search_files / process               — codex's shell
   - clarify                              — codex's own UX
-  - delegate_task / memory /             — `_AGENT_LOOP_TOOLS` in Hermes
-    session_search / todo                  (model_tools.py). They require
+  - raw mcp_* tools                       — configured natively by Codex
+  - delegate_task / memory / todo        — `_AGENT_LOOP_TOOLS` in Hermes
+                                           (model_tools.py). They require
                                            the running AIAgent context to
                                            dispatch (mid-loop state), so a
                                            stateless MCP callback can't
@@ -50,6 +54,8 @@ import logging
 import os
 import sys
 from typing import Any, Optional
+
+from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +110,7 @@ def _signature_from_schema(schema: dict | None) -> tuple[inspect.Signature, dict
 #   - terminal / shell / read_file / write_file / patch / search_files /
 #     process — codex's built-ins cover these and approval routes through
 #     codex's own UI.
-#   - delegate_task / memory / session_search / todo — these are
+#   - delegate_task / memory / todo — these are
 #     `_AGENT_LOOP_TOOLS` in Hermes (model_tools.py:493). They require
 #     the running AIAgent context to dispatch (mid-loop state), so a
 #     stateless MCP callback can't drive them. Hermes' default runtime
@@ -124,8 +130,10 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "browser_vision",
     "vision_analyze",
     "image_generate",
-    "skill_view",
-    "skills_list",
+    "skills_list2",
+    "skill_view2",
+    "skill_manage2",
+    "session_search",
     "text_to_speech",
     # Kanban worker handoff tools — gated on HERMES_KANBAN_TASK env var
     # (set by the kanban dispatcher when spawning a worker). Without these
@@ -149,6 +157,156 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "kanban_unblock",
     "kanban_link",
 )
+
+_CODEX_NATIVE_TOOLS = {
+    "terminal", "shell", "read_file", "write_file", "patch",
+    "search_files", "process",
+}
+_STATEFUL_AGENT_LOOP_TOOLS = {"delegate_task", "memory", "todo"}
+_BRIDGE_DENY_TOOLS = _CODEX_NATIVE_TOOLS | _STATEFUL_AGENT_LOOP_TOOLS | {
+    "clarify",
+    "skills_list", "skill_view", "skill_manage",
+    "tool_search", "tool_describe", "tool_call",
+}
+
+
+def _load_config() -> dict:
+    from hermes_cli.config import load_config
+
+    return load_config()
+
+
+def _configured_mcp_toolsets(config: dict[str, Any]) -> set[str]:
+    from hermes_cli.tools_config import enabled_mcp_server_names
+
+    return set(enabled_mcp_server_names(config))
+
+
+def _remove_mcp_toolsets(toolsets: set[str], config: dict[str, Any]) -> list[str]:
+    cleaned = set(toolsets) - _configured_mcp_toolsets(config)
+    cleaned.discard("no_mcp")
+    return sorted(cleaned)
+
+
+def _resolve_bridge_toolsets() -> list[str]:
+    from hermes_cli.tools_config import _get_platform_tools
+
+    config = _load_config()
+    platform = os.getenv("HERMES_CODEX_BRIDGE_PLATFORM", "cli").strip() or "cli"
+    return _remove_mcp_toolsets(
+        set(_get_platform_tools(config, platform, include_default_mcp_servers=False)),
+        config,
+    )
+
+
+def _resolve_bridge_dispatch_toolsets(exposed_toolsets: list[str]) -> list[str]:
+    """Keep configured MCP dependencies registered but invisible to Codex."""
+    from hermes_cli.tools_config import _get_platform_tools
+
+    config = _load_config()
+    platform = os.getenv("HERMES_CODEX_BRIDGE_PLATFORM", "cli").strip() or "cli"
+    internal = _get_platform_tools(config, platform, include_default_mcp_servers=True)
+    combined = set(exposed_toolsets) | set(internal)
+    combined.discard("no_mcp")
+    return sorted(combined)
+
+
+def _bridge_tool_allowed(name: str) -> bool:
+    return bool(name) and name not in _BRIDGE_DENY_TOOLS and not name.startswith("mcp_")
+
+
+def _bridge_tool_exposed_by_toolset(name: str, exposed_toolsets: list[str]) -> bool:
+    if name in EXPOSED_TOOLS:
+        return True
+    entry = registry.get_entry(name)
+    return entry is None or entry.toolset in set(exposed_toolsets)
+
+
+def _bridge_spec_allowed(name: str, exposed_toolsets: list[str]) -> bool:
+    return _bridge_tool_allowed(name) and _bridge_tool_exposed_by_toolset(name, exposed_toolsets)
+
+
+def _load_bridge_runtime_env() -> list[Any]:
+    from pathlib import Path
+    from hermes_cli.env_loader import load_hermes_dotenv
+
+    return load_hermes_dotenv(
+        hermes_home=os.getenv("HERMES_HOME"),
+        project_env=Path(__file__).resolve().parents[2] / ".env",
+    )
+
+
+def _register_bridge_mcp_dependencies(enabled_toolsets: list[str]) -> None:
+    if not (set(enabled_toolsets) & _configured_mcp_toolsets(_load_config())):
+        return
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+
+        discover_mcp_tools()
+    except Exception as exc:
+        logger.warning("MCP dependency discovery for Codex bridge failed: %s", exc)
+
+
+def _build_bridge_tool_specs(get_tool_definitions) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    _load_bridge_runtime_env()
+    exposed_toolsets = _resolve_bridge_toolsets()
+    dispatch_toolsets = _resolve_bridge_dispatch_toolsets(exposed_toolsets)
+    _register_bridge_mcp_dependencies(dispatch_toolsets)
+    definitions = get_tool_definitions(
+        enabled_toolsets=dispatch_toolsets,
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+    ) or []
+    specs = {}
+    for definition in definitions:
+        if not isinstance(definition, dict) or definition.get("type") != "function":
+            continue
+        spec = definition.get("function")
+        if not isinstance(spec, dict):
+            continue
+        name = spec.get("name")
+        if isinstance(name, str) and _bridge_spec_allowed(name, exposed_toolsets):
+            specs[name] = spec
+    return specs, dispatch_toolsets
+
+
+def _normalize_tool_args(args: dict[str, Any]) -> dict[str, Any]:
+    if set(args) == {"kwargs"} and isinstance(args.get("kwargs"), dict):
+        args = args["kwargs"]
+    return {key: value for key, value in args.items() if value is not None}
+
+
+def _dispatch_session_search(args: dict[str, Any]) -> str:
+    try:
+        from tools.session_search_tool import session_search
+
+        return session_search(
+            query=args.get("query", ""),
+            role_filter=args.get("role_filter"),
+            limit=args.get("limit", 3),
+            session_id=args.get("session_id"),
+            around_message_id=args.get("around_message_id"),
+            window=args.get("window", 5),
+            sort=args.get("sort"),
+        )
+    except Exception as exc:
+        logger.exception("session_search raised")
+        return json.dumps({"error": str(exc), "tool": "session_search"})
+
+
+def _dispatch_tool_call(
+    tool_name: str,
+    args: dict[str, Any],
+    handle_function_call,
+    *,
+    enabled_toolsets: Optional[list[str]] = None,
+) -> str:
+    normalized = _normalize_tool_args(args or {})
+    if tool_name == "session_search":
+        return _dispatch_session_search(normalized)
+    if enabled_toolsets is None:
+        return handle_function_call(tool_name, normalized)
+    return handle_function_call(tool_name, normalized, enabled_toolsets=enabled_toolsets)
 
 
 def _build_server() -> Any:
@@ -181,24 +339,14 @@ def _build_server() -> Any:
         ),
     )
 
-    # Pull authoritative Hermes tool schemas for the ones we expose, so
-    # MCP clients see the same parameter docs Hermes gives the model.
-    all_defs = {
-        td["function"]["name"]: td["function"]
-        for td in (get_tool_definitions(quiet_mode=True) or [])
-        if isinstance(td, dict) and td.get("type") == "function"
-    }
+    # Resolve the configured profile surface once. Hidden MCP toolsets remain
+    # in dispatch scope for dependencies such as Enumerait but are filtered
+    # from the Codex-visible schema.
+    exposed_defs, enabled_toolsets = _build_bridge_tool_specs(get_tool_definitions)
 
     exposed_count = 0
 
-    for name in EXPOSED_TOOLS:
-        spec = all_defs.get(name)
-        if spec is None:
-            logger.debug(
-                "skipping %s — not registered in this Hermes process", name
-            )
-            continue
-
+    for name, spec in exposed_defs.items():
         description = spec.get("description") or f"Hermes {name} tool"
         params_schema = spec.get("parameters") or {"type": "object", "properties": {}}
 
@@ -213,10 +361,12 @@ def _build_server() -> Any:
 
             def _dispatch(**kwargs: Any) -> str:
                 try:
-                    # Filter out None values before dispatch so unset optionals
-                    # aren't forwarded to the handler.
-                    args = {k: v for k, v in kwargs.items() if v is not None}
-                    return handle_function_call(tool_name, args or {})
+                    return _dispatch_tool_call(
+                        tool_name,
+                        kwargs or {},
+                        handle_function_call,
+                        enabled_toolsets=enabled_toolsets,
+                    )
                 except Exception as exc:
                     logger.exception("tool %s raised", tool_name)
                     return json.dumps({"error": str(exc), "tool": tool_name})
@@ -243,9 +393,9 @@ def _build_server() -> Any:
         exposed_count += 1
 
     logger.info(
-        "hermes-tools MCP server registered %d/%d tools",
+        "hermes-tools MCP server registered %d tools from %d configured toolsets",
         exposed_count,
-        len(EXPOSED_TOOLS),
+        len(enabled_toolsets),
     )
     return mcp
 

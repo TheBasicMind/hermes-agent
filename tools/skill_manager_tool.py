@@ -1474,6 +1474,12 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
     """
     token = _skill_gate_bypass.set(True)
     try:
+        if payload.get("_enumerait_v2"):
+            from tools.skills_enumerait_v2 import skill_manage2
+
+            v2_payload = dict(payload)
+            v2_payload.pop("_enumerait_v2", None)
+            return skill_manage2(**v2_payload)
         return skill_manage(
             action=payload.get("action", ""),
             name=payload.get("name", ""),

@@ -107,6 +107,94 @@ class TestModuleSurface:
             f"because codex has built-in equivalents: {leaked}"
         )
 
+    def test_configured_bridge_surface_filters_unsafe_and_nested_tools(self, monkeypatch):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        monkeypatch.setattr(m, "_load_bridge_runtime_env", lambda: [])
+        monkeypatch.setattr(m, "_resolve_bridge_toolsets", lambda: ["skills_v2", "custom"])
+        monkeypatch.setattr(
+            m,
+            "_resolve_bridge_dispatch_toolsets",
+            lambda exposed: [*exposed, "enumerait"],
+        )
+        monkeypatch.setattr(m, "_register_bridge_mcp_dependencies", lambda enabled: None)
+
+        def definitions(**kwargs):
+            definitions.kwargs = kwargs
+            names = (
+                "skill_view2", "custom_tool", "mcp_enumerait_read_node",
+                "skill_view", "terminal", "memory", "tool_search",
+            )
+            return [
+                {"type": "function", "function": {"name": name, "parameters": {"type": "object", "properties": {}}}}
+                for name in names
+            ]
+
+        specs, dispatch_toolsets = m._build_bridge_tool_specs(definitions)
+
+        assert set(specs) == {"skill_view2", "custom_tool"}
+        assert dispatch_toolsets == ["skills_v2", "custom", "enumerait"]
+        assert definitions.kwargs == {
+            "enabled_toolsets": dispatch_toolsets,
+            "quiet_mode": True,
+            "skip_tool_search_assembly": True,
+        }
+
+    def test_hidden_mcp_dependency_is_registered_for_internal_dispatch(self, monkeypatch):
+        import agent.transports.hermes_tools_mcp_server as m
+        import tools.mcp_tool as mcp_tool
+
+        calls = []
+        monkeypatch.setattr(m, "_configured_mcp_toolsets", lambda config: {"enumerait"})
+        monkeypatch.setattr(m, "_load_config", lambda: {"mcp_servers": {"enumerait": {}}})
+        monkeypatch.setattr(mcp_tool, "discover_mcp_tools", lambda: calls.append("discover"))
+
+        m._register_bridge_mcp_dependencies(["skills_v2", "enumerait"])
+
+        assert calls == ["discover"]
+
+    def test_stateless_session_search_and_none_filtering(self, monkeypatch):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        captured = {}
+        monkeypatch.setattr(
+            m,
+            "_dispatch_session_search",
+            lambda args: captured.setdefault("search", args) or '{"success": true}',
+        )
+
+        result = m._dispatch_tool_call(
+            "session_search",
+            {"query": "triage", "role_filter": None, "limit": 2},
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("generic dispatch")),
+        )
+
+        assert result == {"query": "triage", "limit": 2}
+        assert captured["search"] == {"query": "triage", "limit": 2}
+
+    def test_generic_dispatch_keeps_hidden_dependencies_in_scope_and_filters_none(self):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        captured = {}
+
+        def dispatch(name, args, **kwargs):
+            captured.update(name=name, args=args, kwargs=kwargs)
+            return '{"success": true}'
+
+        result = m._dispatch_tool_call(
+            "skill_manage2",
+            {"name": "demo", "file_path": None},
+            dispatch,
+            enabled_toolsets=["skills_v2", "enumerait"],
+        )
+
+        assert result == '{"success": true}'
+        assert captured == {
+            "name": "skill_manage2",
+            "args": {"name": "demo"},
+            "kwargs": {"enabled_toolsets": ["skills_v2", "enumerait"]},
+        }
+
 
 
 

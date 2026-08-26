@@ -201,6 +201,12 @@ TOOLSETS = {
         "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
+
+    "skills_v2": {
+        "description": "Enumerait-authoritative skill browsing and guarded management",
+        "tools": ["skills_list2", "skill_view2", "skill_manage2"],
+        "includes": []
+    },
     
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
