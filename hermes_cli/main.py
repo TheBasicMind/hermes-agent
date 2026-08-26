@@ -6413,6 +6413,25 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         if fatal:
             _say("  Run manually:  npm install --workspace web && npm run build -w web")
         return False
+    # npm may exit successfully while a stale nested web/node_modules still
+    # shadows the workspace-root install. Validate the tree Node will actually
+    # resolve before invoking TypeScript/Vite so the failure is deterministic
+    # and points at the dependency that needs repair.
+    from hermes_cli.web_workspace import (
+        validate_web_workspace_dependencies,
+        workspace_root_for,
+    )
+
+    workspace_errors = validate_web_workspace_dependencies(web_dir)
+    if workspace_errors:
+        _say(
+            f"  {'✗' if fatal else '⚠'} Web UI workspace dependencies are inconsistent"
+            + ("" if fatal else " (hermes web will not be available)")
+        )
+        for issue in workspace_errors:
+            _say(f"  - {issue}")
+        _say(f"  Run manually:  cd {workspace_root_for(web_dir)} && npm ci")
+        return False
     # First attempt — stream output via idle-timeout helper (issue #33788).
     # capture_output=True on a long Vite build looks identical to a hang;
     # users react by rebooting, which leaves the editable install in a
