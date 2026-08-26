@@ -1821,7 +1821,9 @@ def test_codex_incomplete_visible_dedup_suppresses_duplicate_interims(monkeypatc
         _codex_incomplete_with_reasoning("Working on it...", "rs_2"),
         _codex_message_response("Done."),
     ]
-    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+    monkeypatch.setattr(
+        agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0)
+    )
 
     emitted: list = []
     original_emit = agent._emit_interim_assistant_message
@@ -2173,6 +2175,51 @@ def _codex_reasoning_only_response(*, encrypted_content="enc_abc123", summary_te
 
 
 
+
+
+def test_run_conversation_codex_continues_after_tool_intent_text_stall(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.max_iterations = 6
+    responses = [
+        _codex_tool_call_response(),
+        _codex_message_response(
+            "Need tool call. Stop chatter; make call. I must use tools. "
+            "Let's call functions.terminal now. Tool call follows."
+        ),
+        _codex_tool_call_response(),
+        _codex_message_response("Batch processing continued."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    executed = []
+
+    def _fake_execute_tool_calls(
+        assistant_message, messages, effective_task_id, api_call_count=None
+    ):
+        for call in assistant_message.tool_calls:
+            executed.append(call.id)
+            messages.append(
+                {"role": "tool", "tool_call_id": call.id, "content": '{"ok":true}'}
+            )
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = agent.run_conversation("process the kanban batch")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Batch processing continued."
+    assert executed == ["call_1", "call_1"]
+    assert any(
+        msg.get("role") == "assistant"
+        and msg.get("finish_reason") == "incomplete"
+        and "Need tool call" in (msg.get("content") or "")
+        for msg in result["messages"]
+    )
+    assert any(
+        msg.get("role") == "user"
+        and "Execute the required tool calls" in (msg.get("content") or "")
+        for msg in result["messages"]
+    )
 
 
 def test_chat_messages_to_responses_input_reasoning_only_has_following_item(monkeypatch):

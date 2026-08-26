@@ -826,6 +826,20 @@ def _secure_dir(path):
     _chown_to_hermes_uid(path)
 
 
+def _mkdir_existing_dir_safe(path: Path) -> None:
+    """Create a directory, tolerating a concurrent creator of that directory."""
+    for attempt in range(5):
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            return
+        except FileExistsError:
+            if path.is_dir():
+                return
+            if attempt == 4:
+                raise
+            time.sleep(0.05)
+
+
 def _is_container() -> bool:
     """Detect if we're running inside a Docker/Podman/LXC container.
 
@@ -932,14 +946,14 @@ def ensure_hermes_home():
         finally:
             os.umask(old_umask)
     else:
-        home.mkdir(parents=True, exist_ok=True)
+        _mkdir_existing_dir_safe(home)
         _secure_dir(home)
         for subdir in (
             "cron", "sessions", "logs", "logs/curator", "memories",
             "pairing", "hooks", "image_cache", "audio_cache", "skills",
         ):
             d = home / subdir
-            d.mkdir(parents=True, exist_ok=True)
+            _mkdir_existing_dir_safe(d)
             _secure_dir(d)
         _ensure_default_soul_md(home)
 

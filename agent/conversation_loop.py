@@ -7952,6 +7952,7 @@ def run_conversation(
                 agent._clear_status_buffer()
 
                 from agent.agent_runtime_helpers import (
+                    codex_tool_intent_stall,
                     intent_ack_continuation_mode,
                     trailing_continue_intent,
                 )
@@ -7970,8 +7971,13 @@ def run_conversation(
                     bool(getattr(agent, "_stall_guards", True))
                     and agent.valid_tool_names
                     and codex_ack_continuations < 2
-                    and trailing_continue_intent(
-                        agent._strip_think_blocks(final_response or "")
+                    and (
+                        trailing_continue_intent(
+                            agent._strip_think_blocks(final_response or "")
+                        )
+                        or codex_tool_intent_stall(
+                            agent._strip_think_blocks(final_response or "")
+                        )
                     )
                 )
                 if _stall_continue_intent or (

@@ -3939,6 +3939,31 @@ def trailing_continue_intent(text: str) -> bool:
     return bool(_TRAILING_CONTINUE_INTENT_RE.search(t[-160:]))
 
 
+_CODEX_TOOL_INTENT_STALL_PATTERNS = (
+    re.compile(r"\b(?:need|must)\s+(?:a\s+)?tool\s+call\b", re.IGNORECASE),
+    re.compile(r"\b(?:make|emit|issue)\s+(?:the\s+|a\s+)?(?:tool\s+)?call\b", re.IGNORECASE),
+    re.compile(r"\bcall\s+functions\.[a-z_][\w.]*", re.IGNORECASE),
+    re.compile(r"\btool\s+call\s+(?:follows|now)\b", re.IGNORECASE),
+)
+
+
+def codex_tool_intent_stall(text: str) -> bool:
+    """Detect repeated plain-text tool intent when no structured call appeared.
+
+    One incidental mention is not enough: the observed Codex failure narrates
+    the missing call repeatedly. Requiring two distinct diagnostic shapes keeps
+    ordinary explanations about unavailable or completed tools final.
+    """
+    candidate = (text or "").strip()
+    if not candidate or len(candidate) > 600:
+        return False
+    matches = sum(
+        bool(pattern.search(candidate))
+        for pattern in _CODEX_TOOL_INTENT_STALL_PATTERNS
+    )
+    return matches >= 2
+
+
 def intent_ack_continuation_mode(agent) -> str:
     """Classify the resolved intent-ack continuation mode for this turn.
 
@@ -4453,6 +4478,7 @@ __all__ = [
     "repair_tool_call",
     "sanitize_api_messages",
     "looks_like_codex_intermediate_ack",
+    "codex_tool_intent_stall",
     "copy_reasoning_content_for_api",
     "cleanup_dead_connections",
     "extract_api_error_context",

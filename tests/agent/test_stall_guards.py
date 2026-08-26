@@ -15,6 +15,7 @@ Two guards, both notice/re-prompt-only:
 These assert behavior contracts, not message snapshots.
 """
 
+from agent import agent_runtime_helpers as runtime_helpers
 from agent.agent_runtime_helpers import trailing_continue_intent
 from agent.tool_guardrails import (
     IDENTICAL_RESULT_STUB_MIN_CHARS,
@@ -394,3 +395,20 @@ def test_ignores_conversational_future_offers():
     assert not trailing_continue_intent(
         "If you want, I will happily review the PR once CI is green. Just say so!"
     )
+
+
+def test_detects_text_only_codex_tool_intent_stall():
+    assert runtime_helpers.codex_tool_intent_stall(
+        "Need tool call. Stop chatter; make call. I must use tools. "
+        "Let's call functions.terminal now. Tool call follows."
+    )
+
+
+def test_tool_intent_detector_ignores_normal_tool_discussion():
+    assert not runtime_helpers.codex_tool_intent_stall(
+        "The terminal tool is disabled, so here are the manual steps."
+    )
+    assert not runtime_helpers.codex_tool_intent_stall(
+        "I used the tool successfully and the tests passed."
+    )
+    assert not runtime_helpers.codex_tool_intent_stall("")

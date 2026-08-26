@@ -386,6 +386,24 @@ DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 # signal lands, and the following tick reclaims cleanly.
 RECLAIM_DEFER_GRACE_SECONDS = 120
 
+# A claimed run should cross the worker-spawn boundary quickly. If no PID and
+# no ``spawned`` event appear within this grace period, the dispatcher likely
+# died between claim_task() and _set_worker_pid(). Recover that narrow crash
+# window without waiting for the much longer normal claim TTL.
+DEFAULT_UNSPAWNED_CLAIM_GRACE_SECONDS = 120
+
+
+def _resolve_unspawned_claim_grace_seconds() -> int:
+    raw = os.environ.get("HERMES_KANBAN_UNSPAWNED_CLAIM_GRACE_SECONDS", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = -1
+        if value >= 0:
+            return value
+    return DEFAULT_UNSPAWNED_CLAIM_GRACE_SECONDS
+
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Return the effective claim TTL, honoring the kanban env override.
@@ -5108,6 +5126,101 @@ def release_stale_claims(
                 heartbeat_stale=bool(heartbeat_stale),
                 retry_status=retry_status,
             )
+    return reclaimed
+
+
+def release_unspawned_claims(
+    conn: sqlite3.Connection,
+    *,
+    grace_seconds: Optional[int] = None,
+) -> int:
+    """Requeue old claims that never recorded a worker spawn boundary."""
+    grace = (
+        _resolve_unspawned_claim_grace_seconds()
+        if grace_seconds is None
+        else max(0, int(grace_seconds))
+    )
+    now = int(time.time())
+    cutoff = now - grace
+    rows = conn.execute(
+        """
+        SELECT t.id, t.claim_lock, t.claim_expires, t.last_heartbeat_at,
+               t.current_run_id,
+               COALESCE(r.started_at, t.started_at) AS active_started_at
+          FROM tasks t
+          JOIN task_runs r ON r.id = t.current_run_id
+         WHERE t.status = 'running'
+           AND t.worker_pid IS NULL
+           AND r.worker_pid IS NULL
+           AND COALESCE(r.started_at, t.started_at) <= ?
+           AND NOT EXISTS (
+               SELECT 1 FROM task_events e
+                WHERE e.task_id = t.id
+                  AND e.run_id = t.current_run_id
+                  AND e.kind = 'spawned'
+           )
+        """,
+        (cutoff,),
+    ).fetchall()
+    reclaimed = 0
+    for row in rows:
+        run_id = int(row["current_run_id"])
+        started_at = int(row["active_started_at"])
+        elapsed = max(0, now - started_at)
+        with write_txn(conn):
+            retry_status = _retry_status_for_run(conn, row["id"], run_id)
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status = ?, claim_lock = NULL, claim_expires = NULL,
+                       worker_pid = NULL, last_heartbeat_at = NULL
+                 WHERE id = ? AND status = 'running'
+                   AND claim_lock IS ? AND current_run_id = ?
+                   AND worker_pid IS NULL
+                   AND NOT EXISTS (
+                       SELECT 1 FROM task_events e
+                        WHERE e.task_id = tasks.id
+                          AND e.run_id = tasks.current_run_id
+                          AND e.kind = 'spawned'
+                   )
+                """,
+                (retry_status, row["id"], row["claim_lock"], run_id),
+            )
+            if cur.rowcount != 1:
+                continue
+            payload = {
+                "reason": "claimed_without_spawn",
+                "claim_lock": row["claim_lock"],
+                "claim_expires": (
+                    int(row["claim_expires"])
+                    if row["claim_expires"] is not None else None
+                ),
+                "last_heartbeat_at": (
+                    int(row["last_heartbeat_at"])
+                    if row["last_heartbeat_at"] is not None else None
+                ),
+                "worker_pid": None,
+                "started_at": started_at,
+                "elapsed_seconds": elapsed,
+                "grace_seconds": grace,
+                "retry_status": retry_status,
+                "now": now,
+            }
+            closed_run_id = _end_run(
+                conn,
+                row["id"],
+                outcome="reclaimed",
+                status="reclaimed",
+                error=(
+                    "claimed_without_spawn: no worker_pid/spawned event "
+                    f"after {elapsed}s"
+                ),
+                metadata=payload,
+            )
+            _append_event(
+                conn, row["id"], "reclaimed", payload, run_id=closed_run_id
+            )
+            reclaimed += 1
     return reclaimed
 
 
@@ -9943,6 +10056,7 @@ def _dispatch_once_locked(
 
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
+    result.reclaimed += release_unspawned_claims(conn)
     if reconcile_orphans:
         # Orphaned-card reconciliation: requeue 'running' cards whose claim
         # bookkeeping is broken (no valid claim, dead/gone worker) that the

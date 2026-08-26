@@ -244,6 +244,108 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         assert payload["host_local"] is True
 
 
+def _age_active_claim(conn, task_id: str, *, seconds: int = 180) -> int:
+    old = int(time.time()) - seconds
+    run_id = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()["current_run_id"]
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET started_at = ?, worker_pid = NULL WHERE id = ?",
+            (old, task_id),
+        )
+        conn.execute(
+            "UPDATE task_runs SET started_at = ?, worker_pid = NULL WHERE id = ?",
+            (old, run_id),
+        )
+    return int(run_id)
+
+
+def test_dispatch_reclaims_unspawned_claim_after_short_grace(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="claim-without-spawn", assignee="alice")
+        kb.claim_task(conn, task_id)
+        _age_active_claim(conn, task_id)
+
+        result = kb.dispatch_once(conn, dry_run=True)
+
+        task = kb.get_task(conn, task_id)
+        assert result.reclaimed == 1
+        assert task.status == "ready"
+        assert task.claim_lock is None
+        reclaimed = [
+            event
+            for event in kb.list_events(conn, task_id)
+            if event.kind == "reclaimed"
+        ]
+        assert reclaimed[-1].payload["reason"] == "claimed_without_spawn"
+
+
+def test_unspawned_reclaim_ignores_fresh_claim(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="fresh-claim", assignee="alice")
+        kb.claim_task(conn, task_id)
+
+        assert kb.release_unspawned_claims(conn, grace_seconds=120) == 0
+        assert kb.get_task(conn, task_id).status == "running"
+
+
+def test_unspawned_reclaim_ignores_pidless_spawned_run(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="spawned-pidless", assignee="alice")
+        kb.claim_task(conn, task_id)
+        run_id = _age_active_claim(conn, task_id)
+        with kb.write_txn(conn):
+            kb._append_event(conn, task_id, "spawned", {"pid": 12345}, run_id=run_id)
+
+        assert kb.release_unspawned_claims(conn, grace_seconds=120) == 0
+        assert kb.get_task(conn, task_id).status == "running"
+
+
+def test_unspawned_review_claim_returns_to_review(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="review-claim", assignee="reviewer")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (task_id,))
+        kb.claim_review_task(conn, task_id)
+        _age_active_claim(conn, task_id)
+
+        assert kb.release_unspawned_claims(conn, grace_seconds=120) == 1
+        assert kb.get_task(conn, task_id).status == "review"
+
+
+def test_unspawned_reclaim_cas_loses_to_spawn_event(kanban_home, monkeypatch):
+    from contextlib import contextmanager
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="spawn-race", assignee="alice")
+        kb.claim_task(conn, task_id)
+        run_id = _age_active_claim(conn, task_id)
+        real_write_txn = kb.write_txn
+        injected = False
+
+        @contextmanager
+        def spawn_before_reclaim(candidate_conn):
+            nonlocal injected
+            if not injected:
+                injected = True
+                with real_write_txn(candidate_conn):
+                    kb._append_event(
+                        candidate_conn,
+                        task_id,
+                        "spawned",
+                        {"pid": 12345},
+                        run_id=run_id,
+                    )
+            with real_write_txn(candidate_conn):
+                yield
+
+        monkeypatch.setattr(kb, "write_txn", spawn_before_reclaim)
+
+        assert kb.release_unspawned_claims(conn, grace_seconds=120) == 0
+        assert kb.get_task(conn, task_id).status == "running"
+
+
 
 
 

@@ -41,6 +41,38 @@ class TestGetHermesHome:
 
 class TestEnsureHermesHome:
 
+    def test_directory_creation_tolerates_existing_dir_race(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import config as config_mod
+
+        target = tmp_path / "skills"
+        target.mkdir()
+        real_mkdir = Path.mkdir
+        calls = {"count": 0}
+
+        def flaky_mkdir(self, *args, **kwargs):
+            if self == target and calls["count"] == 0:
+                calls["count"] += 1
+                raise FileExistsError(str(self))
+            return real_mkdir(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", flaky_mkdir)
+
+        config_mod._mkdir_existing_dir_safe(target)
+
+        assert calls["count"] == 1
+        assert target.is_dir()
+
+    def test_directory_creation_rejects_existing_file(self, tmp_path):
+        from hermes_cli import config as config_mod
+
+        target = tmp_path / "skills"
+        target.write_text("collision")
+
+        with pytest.raises(FileExistsError):
+            config_mod._mkdir_existing_dir_safe(target)
+
     def test_creates_default_soul_md_if_missing(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             ensure_hermes_home()
