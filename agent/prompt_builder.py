@@ -1591,9 +1591,9 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-# v2: entries gained org provenance fields (org_id/org_author/rel_dir) for M2
-# org-shared skills; older snapshots are discarded and rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 2
+# v3: entries include tags so catalog tag filters behave identically on cold
+# scans and disk-snapshot starts.
+_SKILLS_SNAPSHOT_VERSION = 3
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1729,6 +1729,7 @@ def _build_snapshot_entry(
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "tags": sorted(_normalise_catalog_values(frontmatter.get("tags"))),
     }
     if org_id:
         entry["org_id"] = org_id
@@ -1746,6 +1747,62 @@ def _build_snapshot_entry(
         except Exception:
             entry["org_author"] = ""
     return entry
+
+
+def _normalise_catalog_values(value: object) -> set[str]:
+    """Normalize YAML list/scalar catalog settings and frontmatter tags."""
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        value = value.strip()
+        if value.startswith("[") and value.endswith("]"):
+            value = value[1:-1].split(",")
+        else:
+            value = [value]
+    try:
+        return {str(item).strip() for item in value if str(item).strip()}
+    except TypeError:
+        return set()
+
+
+def _load_skill_catalog_config() -> tuple[bool, str, int | None, set[str], set[str] | None]:
+    """Read prompt-only skill catalog controls from the active profile."""
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+    except Exception:
+        config = {}
+    skills = config.get("skills") if isinstance(config, dict) else {}
+    if not isinstance(skills, dict):
+        skills = {}
+    inject = skills.get("inject_catalog", True) is not False
+    detail = str(skills.get("catalog_detail", "full") or "full").lower()
+    if detail not in {"none", "minimal", "full"}:
+        detail = "full"
+    raw_max = skills.get("max_catalog_entries")
+    try:
+        maximum = int(raw_max) if raw_max is not None else None
+    except (TypeError, ValueError):
+        maximum = None
+    if maximum is not None and maximum < 0:
+        maximum = None
+    tags = _normalise_catalog_values(skills.get("catalog_filter_tags"))
+    raw_enabled = skills.get("preload_enabled_skills", None)
+    enabled = None if raw_enabled is None else _normalise_catalog_values(raw_enabled)
+    return inject, detail, maximum, tags, enabled
+
+
+def _catalog_entry_allowed(
+    frontmatter_name: str,
+    skill_name: str,
+    tags: object,
+    filter_tags: set[str],
+    preload_enabled: set[str] | None,
+) -> bool:
+    if preload_enabled is not None and not ({frontmatter_name, skill_name} & preload_enabled):
+        return False
+    return not filter_tags or bool(_normalise_catalog_values(tags) & filter_tags)
 
 
 # =========================================================================
@@ -1897,6 +1954,15 @@ def _build_skills_system_prompt_inner(
     compact_categories: "frozenset[str] | None",
     project_dirs: "list[Path] | None" = None,
 ) -> str:
+    (
+        inject_catalog,
+        catalog_detail,
+        max_catalog_entries,
+        filter_tags,
+        preload_enabled,
+    ) = _load_skill_catalog_config()
+    if not inject_catalog or catalog_detail == "none":
+        return ""
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
     _platform_hint = _current_session_platform_hint()
@@ -1911,6 +1977,10 @@ def _build_skills_system_prompt_inner(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        catalog_detail,
+        max_catalog_entries,
+        tuple(sorted(filter_tags)),
+        None if preload_enabled is None else tuple(sorted(preload_enabled)),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1946,6 +2016,11 @@ def _build_skills_system_prompt_inner(
                 available_toolsets,
             ):
                 continue
+            if not _catalog_entry_allowed(
+                str(frontmatter_name), str(skill_name), entry.get("tags"),
+                filter_tags, preload_enabled,
+            ):
+                continue
             visible_entries.append(entry)
         category_descriptions = {
             str(k): str(v)
@@ -1966,6 +2041,11 @@ def _build_skills_system_prompt_inner(
                 extract_skill_conditions(frontmatter),
                 available_tools,
                 available_toolsets,
+            ):
+                continue
+            if not _catalog_entry_allowed(
+                str(entry["frontmatter_name"]), str(skill_name), entry.get("tags"),
+                filter_tags, preload_enabled,
             ):
                 continue
             visible_entries.append(entry)
@@ -1999,7 +2079,15 @@ def _build_skills_system_prompt_inner(
                         available_toolsets,
                     ):
                         continue
+                    # Claim precedence before prompt-only catalog filters.
+                    # A filtered project entry must not reveal a shadowed
+                    # profile-local skill with the same name.
                     project_names.add(fm_name)
+                    if not _catalog_entry_allowed(
+                        str(fm_name), str(entry["skill_name"]), entry.get("tags"),
+                        filter_tags, preload_enabled,
+                    ):
+                        continue
                     skills_by_category.setdefault(entry["category"], []).append(
                         (fm_name, f"[project] {entry['description']}".strip())
                     )
@@ -2098,6 +2186,11 @@ def _build_skills_system_prompt_inner(
                     available_toolsets,
                 ):
                     continue
+                if not _catalog_entry_allowed(
+                    str(frontmatter_name), str(skill_name), entry.get("tags"),
+                    filter_tags, preload_enabled,
+                ):
+                    continue
                 seen_skill_names.add(frontmatter_name)
                 skills_by_category.setdefault(entry["category"], []).append(
                     (frontmatter_name, entry["description"])
@@ -2161,7 +2254,9 @@ def _build_skills_system_prompt_inner(
                 if name in seen:
                     continue
                 seen.add(name)
-                if desc:
+                if max_catalog_entries is not None and len(seen) > max_catalog_entries:
+                    continue
+                if desc and catalog_detail == "full":
                     index_lines.append(f"    - {name}: {desc}")
                 else:
                     index_lines.append(f"    - {name}")

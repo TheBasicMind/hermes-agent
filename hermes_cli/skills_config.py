@@ -72,6 +72,29 @@ def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[st
     save_config(config)
 
 
+def get_preload_enabled_skills(config: dict) -> Optional[Set[str]]:
+    """Return the prompt-catalog allowlist, or ``None`` for all skills."""
+    skills_cfg = config.get("skills") or {}
+    if not isinstance(skills_cfg, dict) or "preload_enabled_skills" not in skills_cfg:
+        return None
+    raw = skills_cfg.get("preload_enabled_skills")
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        return set()
+    return _normalize_skill_names(raw)
+
+
+def save_preload_enabled_skills(config: dict, enabled: Set[str]) -> None:
+    """Persist prompt-catalog choices without changing skill availability."""
+    skills_cfg = config.setdefault("skills", {})
+    if not isinstance(skills_cfg, dict):
+        skills_cfg = {}
+        config["skills"] = skills_cfg
+    skills_cfg["preload_enabled_skills"] = sorted(enabled)
+    save_config(config)
+
+
 # ─── Skill Discovery ─────────────────────────────────────────────────────────
 
 def _list_all_skills() -> List[dict]:

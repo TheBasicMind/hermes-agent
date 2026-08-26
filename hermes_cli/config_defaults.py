@@ -2069,6 +2069,16 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Startup prompt catalog controls. These only affect which skill
+        # metadata is advertised in the system prompt; explicit skill_view,
+        # --skills, skills_list, and skill_manage remain fully loadable.
+        "inject_catalog": True,
+        "catalog_detail": "full",  # none|minimal|full
+        "max_catalog_entries": None,  # per category; None = unlimited
+        "catalog_filter_tags": [],
+        # None preserves the legacy all-advertised behavior. An explicit list
+        # advertises only those skill names without disabling any skill.
+        "preload_enabled_skills": None,
         # Advisory NVIDIA SkillEvaluator Tier 1 scan on hub installs
         # (`hermes skills install`). Runs ALONGSIDE the built-in skills
         # guard (which stays the enforcement layer) and only when the
