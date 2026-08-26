@@ -14940,6 +14940,8 @@ app.include_router(_skills_routes.router)
 from hermes_cli.web_routers.skills import (  # noqa: E402,F401 — legacy re-exports; tests call these via web_server.<name>
     get_skills,
     toggle_skill,
+    get_skill_preload,
+    toggle_skill_preload,
     get_skill_content,
     create_skill,
     update_skill_content,

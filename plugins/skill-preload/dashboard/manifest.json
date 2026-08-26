@@ -1,0 +1,10 @@
+{
+  "name": "skill-preload",
+  "label": "Startup Skills",
+  "description": "Choose which enabled skills are advertised in new-session prompts without changing skill availability.",
+  "icon": "Package",
+  "version": "0.2.0",
+  "tab": { "path": "/skill-preload", "position": "after:skills" },
+  "entry": "dist/index.js",
+  "css": "dist/style.css"
+}

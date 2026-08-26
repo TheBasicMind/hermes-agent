@@ -481,6 +481,85 @@ async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
     return await asyncio.to_thread(_run)
 
 
+@router.get("/api/skills/preload")
+async def get_skill_preload(profile: Optional[str] = None):
+    """List enabled skills and whether each is advertised at startup.
+
+    This is intentionally separate from ``/api/skills/toggle``: catalog
+    advertisement never changes explicit skill loadability or skill files.
+    """
+    from hermes_cli.skills_config import (
+        get_disabled_skills,
+        get_preload_enabled_skills,
+    )
+    from tools.skills_tool import _find_all_skills
+
+    def _run():
+        with _profile_scope(profile):
+            config = load_config()
+            disabled = get_disabled_skills(config)
+            preload_enabled = get_preload_enabled_skills(config)
+            skills = _find_all_skills(skip_disabled=True)
+        result = []
+        for skill in skills:
+            name = skill.get("name")
+            if not name or name in disabled:
+                continue
+            advertised = preload_enabled is None or name in preload_enabled
+            row = dict(skill)
+            row.update(
+                enabled=True,
+                available=True,
+                inject_frontmatter=advertised,
+                preload=advertised,
+            )
+            result.append(row)
+        return result
+
+    return await asyncio.to_thread(_run)
+
+
+@router.put("/api/skills/preload/toggle")
+async def toggle_skill_preload(body: SkillToggle, profile: Optional[str] = None):
+    """Toggle prompt-catalog advertisement in one profile only."""
+    from hermes_cli.skills_config import (
+        get_disabled_skills,
+        get_preload_enabled_skills,
+        save_preload_enabled_skills,
+    )
+    from tools.skills_tool import _find_all_skills
+
+    def _run():
+        with _profile_scope(body.profile or profile):
+            with _CONFIG_MUTATION_LOCK:
+                config = load_config()
+                disabled = get_disabled_skills(config)
+                enabled_names = {
+                    skill["name"]
+                    for skill in _find_all_skills(skip_disabled=True)
+                    if skill.get("name") and skill["name"] not in disabled
+                }
+                if body.name not in enabled_names:
+                    raise HTTPException(status_code=400, detail="Skill is disabled or not found")
+                preload_enabled = get_preload_enabled_skills(config)
+                if preload_enabled is None:
+                    preload_enabled = set(enabled_names)
+                if body.enabled:
+                    preload_enabled.add(body.name)
+                else:
+                    preload_enabled.discard(body.name)
+                save_preload_enabled_skills(config, preload_enabled)
+        return {
+            "ok": True,
+            "name": body.name,
+            "inject_frontmatter": body.enabled,
+            "preload": body.enabled,
+            "enabled": True,
+        }
+
+    return await asyncio.to_thread(_run)
+
+
 @router.get("/api/skills/content")
 async def get_skill_content(name: str, profile: Optional[str] = None):
     """Return the raw SKILL.md text for a skill, for the dashboard editor."""

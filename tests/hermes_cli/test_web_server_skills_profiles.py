@@ -90,6 +90,63 @@ class TestProfileScopedSkills:
         client.get("/api/skills", params={"profile": "worker_alpha"})
         assert skills_tool.SKILLS_DIR == before
 
+    def test_preload_toggle_is_profile_scoped_and_does_not_disable_or_rewrite_skill(
+        self, client, isolated_profiles
+    ):
+        worker_home = isolated_profiles["worker_alpha"]
+        skill_md = worker_home / "skills" / "worker-skill" / "SKILL.md"
+        before = skill_md.read_bytes()
+
+        resp = client.put(
+            "/api/skills/preload/toggle",
+            json={"name": "worker-skill", "enabled": False, "profile": "worker_alpha"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "ok": True,
+            "name": "worker-skill",
+            "inject_frontmatter": False,
+            "preload": False,
+            "enabled": True,
+        }
+        worker_cfg = _load_cfg(worker_home)
+        assert worker_cfg["skills"]["preload_enabled_skills"] == []
+        assert worker_cfg["skills"].get("disabled", []) == []
+        assert skill_md.read_bytes() == before
+        assert _load_cfg(isolated_profiles["default"]) == {}
+
+        content = client.get(
+            "/api/skills/content",
+            params={"name": "worker-skill", "profile": "worker_alpha"},
+        )
+        assert content.status_code == 200
+        assert content.json()["content"].encode() == before
+
+        import json
+        from hermes_cli.web_server import _profile_scope
+        from tools.skills_tool import skill_view
+
+        with _profile_scope("worker_alpha"):
+            explicit = json.loads(skill_view("worker-skill", preprocess=False))
+        assert explicit["success"] is True
+
+    def test_preload_list_reports_prompt_injection_without_changing_loadability(
+        self, client, isolated_profiles
+    ):
+        worker_home = isolated_profiles["worker_alpha"]
+        (worker_home / "config.yaml").write_text(
+            "skills:\n  preload_enabled_skills: []\n", encoding="utf-8"
+        )
+
+        resp = client.get("/api/skills/preload", params={"profile": "worker_alpha"})
+
+        assert resp.status_code == 200
+        by_name = {row["name"]: row for row in resp.json()}
+        assert by_name["worker-skill"]["enabled"] is True
+        assert by_name["worker-skill"]["inject_frontmatter"] is False
+        assert by_name["worker-skill"]["preload"] is False
+
 
 class TestProfileScopedHubActions:
     def test_hub_install_spawns_with_profile_flag(
