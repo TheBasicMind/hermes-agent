@@ -1387,3 +1387,43 @@ class TestResolveGatewayLiveness:
         # profile's live gateway from being reported as this profile's.
         assert seen["expected_home"] == profile_dir
 
+    def test_container_supervisor_is_the_final_liveness_rung(self):
+        result = status.resolve_gateway_liveness(
+            runtime=None,
+            health_probe=lambda: (False, None),
+            pid_probe=lambda *a, **k: None,
+            runtime_pid_probe=lambda *a, **k: None,
+            supervisor_probe=lambda: 4242,
+        )
+
+        assert result.running is True
+        assert result.pid == 4242
+        assert result.source == "supervisor"
+
+    def test_remote_health_still_wins_over_container_supervisor(self):
+        supervisor_calls = []
+
+        result = status.resolve_gateway_liveness(
+            runtime=None,
+            health_probe=lambda: (True, {"pid": 9001}),
+            pid_probe=lambda *a, **k: None,
+            runtime_pid_probe=lambda *a, **k: None,
+            supervisor_probe=lambda: supervisor_calls.append(True) or 4242,
+        )
+
+        assert result.source == "health"
+        assert result.pid == 9001
+        assert supervisor_calls == []
+
+    @pytest.mark.parametrize("bad_pid", [None, 0, -1, True, "not-a-pid"])
+    def test_container_supervisor_requires_positive_process_identity(self, bad_pid):
+        result = status.resolve_gateway_liveness(
+            runtime=None,
+            health_probe=None,
+            pid_probe=lambda *a, **k: None,
+            runtime_pid_probe=lambda *a, **k: None,
+            supervisor_probe=lambda: bad_pid,
+        )
+
+        assert result.running is False
+        assert result.pid is None

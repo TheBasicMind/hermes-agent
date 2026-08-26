@@ -4114,10 +4114,18 @@ class PluginManager:
         logger.debug("  user: %d manifest(s)", len(user_manifests))
         manifests.extend(user_manifests)
 
-        # 3. Project plugins (./.hermes/plugins/), only when explicitly opted
-        # in. This must match the full discovery gate exactly.
+        # 3. Project plugins (./.hermes/plugins/, or the deployment-pinned
+        # directory), only when explicitly opted in. Container workers run
+        # from scratch workspaces, so their cwd is not a stable project root.
+        # The override is deliberately one canonical directory rather than a
+        # search path: project-plugin precedence must stay deterministic.
         if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
-            project_dir = Path.cwd() / ".hermes" / "plugins"
+            pinned_project_dir = os.environ.get("HERMES_PROJECT_PLUGINS_DIR", "")
+            project_dir = (
+                Path(pinned_project_dir).expanduser()
+                if pinned_project_dir.strip()
+                else Path.cwd() / ".hermes" / "plugins"
+            )
             logger.debug("Scanning project plugins: %s", project_dir)
             project_manifests = self._scan_directory(project_dir, source="project")
             logger.debug("  project: %d manifest(s)", len(project_manifests))

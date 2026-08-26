@@ -1304,6 +1304,7 @@ def resolve_gateway_liveness(
     pid_probe: Optional[Callable[..., Optional[int]]] = None,
     runtime_reader: Optional[Callable[..., Optional[dict[str, Any]]]] = None,
     runtime_pid_probe: Optional[Callable[..., Optional[int]]] = None,
+    supervisor_probe: Optional[Callable[[], Optional[int]]] = None,
 ) -> GatewayLiveness:
     """Single source of truth for "is the gateway up?" across dashboard surfaces.
 
@@ -1328,6 +1329,9 @@ def resolve_gateway_liveness(
     3. **Runtime status PID** — validated against the live process table with
        ``expected_home`` so a recycled PID belonging to a *different*
        profile's gateway is never reported as this one's.
+    4. **Deployment supervisor** — an optional container-owned probe supplied
+       by the dashboard. It is last so the portable PID, remote-health, and
+       process-identity checks remain authoritative outside that deployment.
 
     Rung 3 only ever runs against a LOCAL state record: the probe body's PID
     belongs to another host, and ``os.kill``-ing a remote PID is both wrong
@@ -1405,6 +1409,24 @@ def resolve_gateway_liveness(
             source="runtime_status",
             health_body=health_body,
         )
+
+    if supervisor_probe is not None:
+        try:
+            supervisor_pid = supervisor_probe()
+            if isinstance(supervisor_pid, bool):
+                supervisor_pid = None
+            elif supervisor_pid is not None:
+                supervisor_pid = int(supervisor_pid)
+        except (OSError, TypeError, ValueError):
+            supervisor_pid = None
+            probe_error = True
+        if supervisor_pid is not None and supervisor_pid > 0:
+            return GatewayLiveness(
+                running=True,
+                pid=supervisor_pid,
+                source="supervisor",
+                health_body=health_body,
+            )
 
     return GatewayLiveness(
         running=False,
